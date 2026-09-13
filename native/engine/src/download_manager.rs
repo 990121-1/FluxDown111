@@ -1718,6 +1718,17 @@ impl DownloadManager {
         self.retry_rx.take()
     }
 
+    /// 注册订阅 provider；RSS 内置 provider 已在构造时自动注册。
+    ///
+    /// 宿主初始化插件后可通过此入口挂载插件订阅适配器，统一复用 RSS 的
+    /// 调度、退避、去重、过滤、落库和建任务流程。
+    pub fn register_subscription_provider(
+        &mut self,
+        provider: Arc<dyn crate::subscription::SubscriptionProvider>,
+    ) {
+        self.rss.register_provider(provider);
+    }
+
     /// Take the receiver for file-missing auto-cleanup batches.
     /// The actor loop should select on this and delete the reported task
     /// records (config `file_missing_action` == `"delete"`). 宿主不取时
@@ -8654,6 +8665,7 @@ impl DownloadManager {
             // 真正的内容走 torrent_file_bytes 持久化。
             url: plan.url.clone(),
             save_dir: self.resolve_rss_save_dir(&plan.save_dir, &plan.queue_id),
+            file_name: plan.title.clone(),
             torrent_file_bytes: outcome.bytes,
             proxy_url: plan.proxy_url.clone(),
             user_agent: plan.user_agent.clone(),
@@ -8700,8 +8712,10 @@ impl DownloadManager {
             let spec = NewTaskSpec {
                 url: plan.url.clone(),
                 save_dir: self.resolve_rss_save_dir(&plan.save_dir, &plan.queue_id),
+                file_name: plan.title.clone(),
                 cookies: plan.cookies.clone(),
                 referrer: plan.referrer.clone(),
+                resolver_item: plan.resolver_item.clone(),
                 proxy_url: plan.proxy_url.clone(),
                 user_agent: plan.user_agent.clone(),
                 queue_id: plan.queue_id.clone(),

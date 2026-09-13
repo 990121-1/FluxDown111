@@ -1,5 +1,5 @@
 // 代理：服务器出站代理（config 表）+ 连通性测试（/api/v1/proxy/test）。
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
 import { translateBackendMessage, useI18n } from '../../lib/i18n'
@@ -32,6 +32,13 @@ export function ProxySettings({
   const noList = config.proxy_no_list ?? ''
 
   const [testState, setTestState] = useState<TestState>({ status: 'idle' })
+  // 文本框采用失焦提交，但“测试”按钮可能与失焦同一事件链触发；
+  // 保留最新编辑态，避免测试请求读到旧 config 中的空 host/port。
+  const [draftHost, setDraftHost] = useState(host)
+  const [draftPort, setDraftPort] = useState(port)
+
+  useEffect(() => setDraftHost(host), [host])
+  useEffect(() => setDraftPort(port), [port])
 
   /** 开启代理时与多 CDN 并发互斥（对齐桌面端 _selectProxyMode）：功能已开启则弹
    *  确认框——确认「关闭该功能并开启代理」一次写入两个键，取消则保持原模式。 */
@@ -62,8 +69,8 @@ export function ProxySettings({
     try {
       const res = await api.proxyTest({
         proxyType: type,
-        host,
-        port,
+        host: draftHost.trim(),
+        port: draftPort.trim(),
         username: username || undefined,
         password: password || undefined,
       })
@@ -99,8 +106,20 @@ export function ProxySettings({
             <SetRow title={t('set.proxy.type')} desc="HTTP / HTTPS / SOCKS4 / SOCKS5">
               <SetSelect value={type} onValueChange={(v) => mutate({ proxy_type: v })} options={PROXY_TYPE_OPTIONS} />
             </SetRow>
-            <TextFieldRow title={t('set.proxy.host')} value={host} placeholder="127.0.0.1" onCommit={(v) => mutate({ proxy_host: v })} />
-            <TextFieldRow title={t('set.proxy.port')} value={port} placeholder="1080" onCommit={(v) => mutate({ proxy_port: v })} />
+            <TextFieldRow
+              title={t('set.proxy.host')}
+              value={host}
+              placeholder="127.0.0.1"
+              onValueChange={setDraftHost}
+              onCommit={(v) => mutate({ proxy_host: v })}
+            />
+            <TextFieldRow
+              title={t('set.proxy.port')}
+              value={port}
+              placeholder="1080"
+              onValueChange={setDraftPort}
+              onCommit={(v) => mutate({ proxy_port: v })}
+            />
             <TextFieldRow
               title={t('set.proxy.username')}
               desc={t('common.optional')}

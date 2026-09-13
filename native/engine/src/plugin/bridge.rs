@@ -338,7 +338,16 @@ impl EngineBridge {
         plugin_retry_tx: mpsc::UnboundedSender<(String, u64)>,
         data_dir: PathBuf,
     ) -> Result<Self, PluginError> {
+        let resolved_proxy = proxy.resolve();
+        log_info!(
+            "[plugin] bridge outbound proxy: mode={}, type={}, endpoint={}:{}",
+            resolved_proxy.mode.as_str(),
+            resolved_proxy.proxy_type.as_str(),
+            resolved_proxy.host,
+            resolved_proxy.port
+        );
         let mut builder = reqwest::Client::builder()
+            .use_rustls_tls()
             .timeout(REQUEST_TIMEOUT)
             .dns_resolver(Arc::new(GuardResolver))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -427,10 +436,9 @@ impl PluginBridge for EngineBridge {
             rb = rb.body(body);
         }
 
-        let mut resp = rb
-            .send()
-            .await
-            .map_err(|e| PluginError::Runtime(format!("fetch 失败: {e}")))?;
+        let mut resp = rb.send().await.map_err(|e| {
+            PluginError::Runtime(format!("fetch 失败: {}", reqwest_error_detail(&e)))
+        })?;
         let status = resp.status().as_u16();
         let mut headers = std::collections::HashMap::new();
         for (k, v) in resp.headers() {
@@ -453,7 +461,7 @@ impl PluginBridge for EngineBridge {
                     body.extend_from_slice(&chunk);
                 }
                 Ok(None) => break,
-                Err(e) => return Err(PluginError::Runtime(format!("读取响应体失败: {e}"))),
+                Err(e) => return Err(PluginError::Runtime(format!("读取响应体失败: {e:#}"))),
             }
         }
 
@@ -857,6 +865,17 @@ impl PluginBridge for EngineBridge {
             truncated_stderr,
         })
     }
+}
+
+fn reqwest_error_detail(error: &reqwest::Error) -> String {
+    let mut detail = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(inner) = source {
+        detail.push_str(": ");
+        detail.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    detail
 }
 
 /// 在牢笼内执行受管外部工具（ffmpeg / ffprobe）的共用管线：参数校验（封网 +

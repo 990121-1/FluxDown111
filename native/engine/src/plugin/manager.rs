@@ -10,11 +10,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use serde::Deserialize;
 use tokio::sync::RwLock;
 
 use crate::db::Db;
 use crate::events::{EngineEvent, EventSink};
 use crate::logger::log_info;
+use crate::rss::parser::{ParsedFeed, ParsedItem};
+use crate::subscription::{
+    SubscriptionFetchFuture, SubscriptionFetchRequest, SubscriptionProvider,
+};
 
 use super::manifest::{
     PERMISSION_FFMPEG, PERMISSION_YTDLP, PluginManifest, SettingField, SettingType,
@@ -24,6 +29,7 @@ use super::quickjs::HARD_TIMEOUT_CEILING;
 use super::runtime::{
     ExecutionBudget, HostContext, ManifestItem, PluginBridge, PluginEntryKind, PluginError,
     PluginEvent, PluginScript, ResolveManifest, ResolveRequest, ResolveResult, ScriptRuntime,
+    SubscriptionRequest,
 };
 
 /// 连续超时/超内存达到该次数 → 自动熔断禁用。
@@ -85,9 +91,12 @@ pub struct LoadedPlugin {
     resolver_entry: Option<PathBuf>,
     /// hooks 入口绝对路径（若声明）。
     hooks_entry: Option<PathBuf>,
+    /// subscription provider 入口绝对路径（若声明）。
+    subscription_entry: Option<PathBuf>,
     /// 非 dev 模式的缓存源码（加载时读入）。
     resolver_cache: Option<String>,
     hooks_cache: Option<String>,
+    subscription_cache: Option<String>,
     /// 熔断计数（连续 Timeout/MemoryLimit）。
     timeout_streak: Arc<AtomicU32>,
 }
@@ -107,6 +116,37 @@ impl LoadedPlugin {
             (None, _) => None,
         }
     }
+
+    async fn subscription_source(&self) -> Option<String> {
+        match (&self.subscription_entry, self.dev) {
+            (Some(p), true) => tokio::fs::read_to_string(p).await.ok(),
+            (Some(_), false) => self.subscription_cache.clone(),
+            (None, _) => None,
+        }
+    }
+}
+
+/// 动态插件订阅路由。provider 安装、启停或卸载后无需重建引擎，路由每次
+/// 调用都向 `PluginManager` 读取当前快照。
+pub struct PluginSubscriptionRouter {
+    manager: Arc<PluginManager>,
+}
+
+impl SubscriptionProvider for PluginSubscriptionRouter {
+    fn id(&self) -> &str {
+        "*"
+    }
+
+    fn fetch(&self, request: SubscriptionFetchRequest) -> SubscriptionFetchFuture {
+        let manager = self.manager.clone();
+        let provider_id = request.provider_id.clone();
+        Box::pin(async move {
+            manager
+                .fetch_subscription(&provider_id, request)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
 }
 
 /// 传给 UI 的插件视图。
@@ -125,6 +165,8 @@ pub struct PluginInfo {
     pub settings_values: Vec<(String, String)>,
     /// manifest 声明的能力权限（供 UI 展示授权，如 `["ffmpeg"]`）。
     pub permissions: Vec<String>,
+    /// manifest 声明的订阅 provider ID；仅启用插件会被前端作为可选订阅来源展示。
+    pub subscription_provider_ids: Vec<String>,
 }
 
 /// 安装来源判别（供 actor 分发规则表）。
@@ -237,6 +279,7 @@ impl PluginManager {
 
         let resolver_entry = manifest.resolvers.first().map(|r| dir.join(&r.entry));
         let hooks_entry = manifest.hooks.as_ref().map(|h| dir.join(&h.entry));
+        let subscription_entry = manifest.subscriptions.first().map(|s| dir.join(&s.entry));
 
         // 死订阅检查：同时声明 resolver 与订阅 onMetaProbed → warn（带 resolver 的
         // 任务跳过 probe，onMetaProbed 不会触发）。
@@ -251,8 +294,8 @@ impl PluginManager {
         }
 
         // 非 dev：加载时读入源码缓存。
-        let (resolver_cache, hooks_cache) = if dev {
-            (None, None)
+        let (resolver_cache, hooks_cache, subscription_cache) = if dev {
+            (None, None, None)
         } else {
             let rc = match &resolver_entry {
                 Some(p) => match tokio::fs::read_to_string(p).await {
@@ -277,7 +320,20 @@ impl PluginManager {
                 },
                 None => None,
             };
-            (rc, hc)
+            let sc = match &subscription_entry {
+                Some(p) => match tokio::fs::read_to_string(p).await {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        log_info!(
+                            "[plugin] 跳过 {}: 读取 subscription 失败: {e}",
+                            manifest.identity
+                        );
+                        return None;
+                    }
+                },
+                None => None,
+            };
+            (rc, hc, sc)
         };
 
         let identity = manifest.identity.clone();
@@ -308,8 +364,10 @@ impl PluginManager {
             disabled_reason,
             resolver_entry,
             hooks_entry,
+            subscription_entry,
             resolver_cache,
             hooks_cache,
+            subscription_cache,
             timeout_streak: Arc::new(AtomicU32::new(0)),
         })
     }
@@ -465,6 +523,109 @@ impl PluginManager {
         Ok(result)
     }
 
+    /// 构造动态插件订阅路由；插件安装或启停后不需要重新注入该路由。
+    pub fn subscription_router(self: &Arc<Self>) -> Arc<dyn SubscriptionProvider> {
+        Arc::new(PluginSubscriptionRouter {
+            manager: self.clone(),
+        })
+    }
+
+    /// 调用一个插件订阅 provider，并把返回值规范化为引擎条目。
+    pub async fn fetch_subscription(
+        &self,
+        provider_id: &str,
+        request: SubscriptionFetchRequest,
+    ) -> Result<ParsedFeed, PluginError> {
+        let (manifest, streak, source, version, identity) = {
+            let snapshot = self.plugins.read().await.clone();
+            let Some(p) = snapshot
+                .iter()
+                .filter(|p| {
+                    p.enabled
+                        && p.manifest
+                            .subscriptions
+                            .first()
+                            .is_some_and(|s| s.provider_id == provider_id)
+                })
+                .min_by(|a, b| a.manifest.identity.cmp(&b.manifest.identity))
+            else {
+                return Err(PluginError::Runtime(format!(
+                    "订阅 provider {provider_id} 未安装或已禁用"
+                )));
+            };
+            let source = p.subscription_source().await;
+            (
+                p.manifest.clone(),
+                p.timeout_streak.clone(),
+                source,
+                p.manifest.version.clone(),
+                p.manifest.identity.clone(),
+            )
+        };
+        let Some(source) = source else {
+            return Err(PluginError::Runtime(format!(
+                "订阅 provider {provider_id} 的脚本读取失败"
+            )));
+        };
+
+        let values = self.load_setting_values(&identity).await;
+        for field in &manifest.settings {
+            if field.required && value_of(&values, field).is_none() {
+                return Err(PluginError::MissingRequiredSetting(format!(
+                    "插件 {identity} 需先配置「{}」",
+                    field.title
+                )));
+            }
+        }
+
+        manifest
+            .subscriptions
+            .first()
+            .ok_or_else(|| PluginError::Runtime("订阅 provider 声明缺失".to_string()))?;
+        let budget = self.subscription_budget_for(&manifest);
+        let script = PluginScript {
+            identity: identity.clone(),
+            source,
+            entry_fn_hint: PluginEntryKind::Subscription,
+            version,
+            app_version: self.app_version.clone(),
+        };
+        let result = self
+            .runtime
+            .invoke_subscription(
+                &script,
+                SubscriptionRequest {
+                    provider_id: provider_id.to_string(),
+                    source_id: request.source_id,
+                    url: request.url,
+                    provider_config: request.provider_config,
+                    cookies: request.cookies,
+                    user_agent: request.user_agent,
+                },
+                build_typed_settings_json(&manifest, &values),
+                self.bridge.clone(),
+                budget,
+                HostContext {
+                    ytdlp_permitted: manifest.has_permission(PERMISSION_YTDLP),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        match &result {
+            Err(PluginError::Timeout) | Err(PluginError::MemoryLimitExceeded) => {
+                let n = streak.fetch_add(1, Ordering::SeqCst) + 1;
+                if n >= CIRCUIT_BREAKER_THRESHOLD {
+                    self.trip_circuit_breaker(&identity).await;
+                }
+            }
+            _ => streak.store(0, Ordering::SeqCst),
+        }
+
+        let raw = result?;
+        parse_subscription_output(&raw)
+    }
+
     /// 通知平面：遍历声明该事件且 match 命中的启用插件，逐个在插件 runtime 上 spawn
     /// invoke_hook。**全部 fire-and-forget，本函数立即返回**。
     pub async fn notify(&self, event: PluginEvent) {
@@ -589,6 +750,21 @@ impl PluginManager {
         }
     }
 
+    /// subscription 预算：manifest 可下调默认 resolve 预算。
+    fn subscription_budget_for(&self, manifest: &PluginManifest) -> ExecutionBudget {
+        let timeout = manifest
+            .subscriptions
+            .first()
+            .and_then(|s| s.timeout_ms)
+            .map(Duration::from_millis)
+            .unwrap_or(self.resolve_budget.timeout)
+            .min(HARD_TIMEOUT_CEILING);
+        ExecutionBudget {
+            timeout,
+            memory_limit_bytes: self.resolve_budget.memory_limit_bytes,
+        }
+    }
+
     // ---------------------------------------------------------------------
     // 安装 / 卸载 / 启停 / 设置
     // ---------------------------------------------------------------------
@@ -659,6 +835,11 @@ impl PluginManager {
                     }
                     if r.is_ok()
                         && let Some(src) = p.hooks_source().await
+                    {
+                        r = self.runtime.check_compile(&src);
+                    }
+                    if r.is_ok()
+                        && let Some(src) = p.subscription_source().await
                     {
                         r = self.runtime.check_compile(&src);
                     }
@@ -873,6 +1054,12 @@ impl PluginManager {
                 settings: p.manifest.settings.clone(),
                 settings_values: values.into_iter().collect(),
                 permissions: p.manifest.permissions.clone(),
+                subscription_provider_ids: p
+                    .manifest
+                    .subscriptions
+                    .iter()
+                    .map(|subscription| subscription.provider_id.clone())
+                    .collect(),
             });
         }
         out
@@ -947,6 +1134,64 @@ fn build_typed_settings_json(
         obj.insert(f.key.clone(), jv);
     }
     serde_json::Value::Object(obj).to_string()
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct SubscriptionOutput {
+    title: String,
+    link: String,
+    items: Vec<SubscriptionOutputItem>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct SubscriptionOutputItem {
+    guid: String,
+    title: String,
+    link: String,
+    enclosure_url: String,
+    /// 可选二段解析标识；非空时核心用条目 link 调 resolver，保留插件的精确规格。
+    resolver_item: String,
+    enclosure_length: i64,
+    pub_date: i64,
+}
+
+fn parse_subscription_output(raw: &str) -> Result<ParsedFeed, PluginError> {
+    let output: SubscriptionOutput = serde_json::from_str(raw)
+        .map_err(|e| PluginError::InvalidOutput(format!("订阅返回值非法: {e}")))?;
+    if output.items.len() > 1000 {
+        return Err(PluginError::InvalidOutput(
+            "订阅条目数量超过 1000".to_string(),
+        ));
+    }
+    let mut items = Vec::with_capacity(output.items.len());
+    for item in output.items {
+        if item.guid.is_empty() || item.guid.len() > 2048 {
+            return Err(PluginError::InvalidOutput(
+                "订阅条目 guid 必须非空且不超过 2048 字节".to_string(),
+            ));
+        }
+        if item.enclosure_length < 0 {
+            return Err(PluginError::InvalidOutput(
+                "订阅条目 enclosureLength 不可为负数".to_string(),
+            ));
+        }
+        items.push(ParsedItem {
+            guid: item.guid,
+            title: item.title,
+            link: item.link,
+            enclosure_url: item.enclosure_url,
+            resolver_item: item.resolver_item,
+            enclosure_length: item.enclosure_length,
+            pub_date: item.pub_date,
+        });
+    }
+    Ok(ParsedFeed {
+        title: output.title,
+        link: output.link,
+        items,
+    })
 }
 
 /// resolve 输出校验：url scheme ∈{http,https,ftp,magnet,ed2k}、长度 ≤8KB；

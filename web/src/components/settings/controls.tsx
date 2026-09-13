@@ -124,12 +124,14 @@ export function SetSelect({
 export function TextInput({
   value,
   onCommit,
+  onValueChange,
   placeholder,
   password,
   className,
 }: {
   value: string
   onCommit: (v: string) => void
+  onValueChange?: (v: string) => void
   placeholder?: string
   password?: boolean
   className?: string
@@ -143,7 +145,10 @@ export function TextInput({
       spellCheck={false}
       placeholder={placeholder}
       value={text}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        setText(e.target.value)
+        onValueChange?.(e.target.value)
+      }}
       onBlur={() => {
         if (text !== value) onCommit(text)
       }}
@@ -219,6 +224,7 @@ export function TextFieldRow({
   desc,
   value,
   onCommit,
+  onValueChange,
   placeholder,
   password,
 }: {
@@ -226,12 +232,19 @@ export function TextFieldRow({
   desc?: string
   value: string
   onCommit: (v: string) => void
+  onValueChange?: (v: string) => void
   placeholder?: string
   password?: boolean
 }) {
   return (
     <SetRow title={title} desc={desc}>
-      <TextInput value={value} onCommit={onCommit} placeholder={placeholder} password={password} />
+      <TextInput
+        value={value}
+        onCommit={onCommit}
+        onValueChange={onValueChange}
+        placeholder={placeholder}
+        password={password}
+      />
     </SetRow>
   )
 }
