@@ -21,8 +21,7 @@ import {
   buildMediaCandidates,
   candidateFilename,
   defaultCandidateVariant,
-  friendlyQualityKey,
-  isHighFrameRate,
+  qualityFrameRateLabel,
   qualityResolutionLabel,
   selectQualityVideoTracks,
 } from '@/utils/media-candidates';
@@ -160,7 +159,6 @@ export default defineContentScript({
           pageTitle: document.title,
           pageUrl: location.href,
           fallbackTitle: t('panel.videoCandidate'),
-          videoLabel: t('panel.videoIndex'),
           manifests: dashManifests,
         }),
         tabId: undefined,
@@ -864,11 +862,10 @@ export default defineContentScript({
     function candidateVariantLabel(variant: MediaCandidateVariant): string {
       if (variant.label === 'auto') return t('panel.autoQuality');
       if (variant.label === 'original') return t('panel.originalQuality');
-      const key = friendlyQualityKey(variant.label);
-      const quality = key ? t(key) : t('panel.qualityUnknown');
-      if (!isHighFrameRate(variant.frameRate)) return quality;
       const resolution = qualityResolutionLabel(variant.label);
-      return resolution ? `${resolution} · ${t('panel.quality60fps')}` : quality;
+      if (!resolution) return t('panel.qualityUnknown');
+      const fps = qualityFrameRateLabel(variant.frameRate);
+      return fps ? `${resolution} ${fps}` : resolution;
     }
 
     function downloadCandidate(
@@ -1031,7 +1028,6 @@ export default defineContentScript({
         pageTitle: document.title,
         pageUrl: location.href,
         fallbackTitle: t('panel.videoCandidate'),
-        videoLabel: t('panel.videoIndex'),
         manifests: dashManifests,
       });
       return candidates.filter(
@@ -1046,7 +1042,6 @@ export default defineContentScript({
           pageTitle: document.title,
           pageUrl: location.href,
           fallbackTitle: t('panel.videoCandidate'),
-          videoLabel: t('panel.videoIndex'),
           manifests: dashManifests,
         }).flatMap((candidate) => candidate.rawResourceIds),
       );
@@ -1148,11 +1143,7 @@ export default defineContentScript({
       // 分辨率标签优先取播放器实际高度；取不到时回退到嗅探资源数量提示。
       const height = video.videoHeight;
       let label = t('panel.floatDL');
-      if (height >= 2160) label = '4K';
-      else if (height >= 1080) label = '1080p';
-      else if (height >= 720) label = '720p';
-      else if (height >= 480) label = '480p';
-      else if (height > 0) label = `${height}p`;
+      if (height > 0) label = `${height}p`;
       else if (isBlob && media.length > 0) label = String(media.length);
 
       const lbl = floatBtnEl.querySelector('.label');
@@ -1195,12 +1186,11 @@ export default defineContentScript({
           : v.bandwidth
             ? `${Math.round(v.bandwidth / 1000)}kbps`
             : '';
-        const qualityKey = friendlyQualityKey(rawQuality);
-        const baseQuality = qualityKey ? t(qualityKey) : t('panel.qualityUnknown');
         const resolution = qualityResolutionLabel(rawQuality);
-        const quality = isHighFrameRate(v.frameRate) && resolution
-          ? `${resolution} · ${t('panel.quality60fps')}`
-          : baseQuality;
+        const fps = qualityFrameRateLabel(v.frameRate);
+        const quality = resolution
+          ? fps ? `${resolution} ${fps}` : resolution
+          : t('panel.qualityUnknown');
 
         return {
           quality,

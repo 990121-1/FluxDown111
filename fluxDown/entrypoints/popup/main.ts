@@ -36,8 +36,7 @@ import type {
 import {
   buildMediaCandidates,
   candidateFilename,
-  friendlyQualityKey,
-  isHighFrameRate,
+  qualityFrameRateLabel,
   qualityResolutionLabel,
 } from '@/utils/media-candidates';
 import {
@@ -847,7 +846,6 @@ function popupMediaCandidates(): MediaCandidate[] {
     pageTitle: resourcePageTitle,
     pageUrl: resourcePageUrl,
     fallbackTitle: t('panel.videoCandidate'),
-    videoLabel: t('panel.videoIndex'),
     manifests: dashManifests,
   });
 }
@@ -1136,11 +1134,10 @@ function closePreview(): void {
 function popupCandidateVariantLabel(variant: MediaCandidateVariant): string {
   if (variant.label === 'auto') return t('panel.autoQuality');
   if (variant.label === 'original') return t('panel.originalQuality');
-  const key = friendlyQualityKey(variant.label);
-  const quality = key ? t(key) : t('panel.qualityUnknown');
-  if (!isHighFrameRate(variant.frameRate)) return quality;
   const resolution = qualityResolutionLabel(variant.label);
-  return resolution ? `${resolution} · ${t('panel.quality60fps')}` : quality;
+  if (!resolution) return t('panel.qualityUnknown');
+  const fps = qualityFrameRateLabel(variant.frameRate);
+  return fps ? `${resolution} ${fps}` : resolution;
 }
 
 function downloadPopupCandidate(

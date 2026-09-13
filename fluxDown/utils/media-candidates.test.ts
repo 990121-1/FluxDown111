@@ -136,7 +136,6 @@ describe("buildMediaCandidates", () => {
 
     const candidates = buildMediaCandidates(resources, {
       fallbackTitle: "Video",
-      videoLabel: "Video",
       manifests: [
         {
           url: "https://cdn.example.com/play/manifest.json",
@@ -159,7 +158,6 @@ describe("buildMediaCandidates", () => {
   test("deduplicates repeated manifests whose CDN signatures rotate", () => {
     const candidates = buildMediaCandidates([], {
       fallbackTitle: "Video",
-      videoLabel: "Video",
       manifests: [
         {
           url: "https://cdn.example.com/play/manifest.json?session=one",
@@ -204,7 +202,6 @@ describe("buildMediaCandidates", () => {
 
     const candidates = buildMediaCandidates(resources, {
       fallbackTitle: "Video",
-      videoLabel: "Video",
       manifests: [{
         url: "https://cdn.example.com/play/manifest.mpd",
         manifest: currentManifest,
@@ -246,7 +243,6 @@ describe("buildMediaCandidates", () => {
 
     const candidates = buildMediaCandidates(resources, {
       fallbackTitle: "Video",
-      videoLabel: "Video",
       manifests: [{
         url: "https://cdn.example.com/play/manifest.mpd",
         manifest: currentManifest,
@@ -290,7 +286,6 @@ describe("buildMediaCandidates", () => {
       pageTitle: "Current video",
       pageUrl: "https://example.com/watch/current",
       fallbackTitle: "Video",
-      videoLabel: "Video",
       manifests: [
         {
           url: "https://example.com/watch/current",

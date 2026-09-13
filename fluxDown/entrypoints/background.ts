@@ -237,7 +237,6 @@ export default defineBackground(() => {
       : [];
     const candidates = buildMediaCandidates(resources, {
       fallbackTitle: "Video",
-      videoLabel: "Video",
       pageUrl: resources.find((resource) => resource.pageUrl)?.pageUrl,
       manifests,
     });

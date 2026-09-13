@@ -561,12 +561,6 @@ export default defineContentScript({
 
     function detectQuality(video: HTMLVideoElement): string | undefined {
       const h = video.videoHeight;
-      if (h >= 2160) return "4K";
-      if (h >= 1440) return "1440p";
-      if (h >= 1080) return "1080p";
-      if (h >= 720) return "720p";
-      if (h >= 480) return "480p";
-      if (h >= 360) return "360p";
       if (h > 0) return `${h}p`;
       return undefined;
     }

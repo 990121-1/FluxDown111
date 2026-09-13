@@ -58,8 +58,6 @@ export interface MediaCandidateOptions {
   pageUrl?: string;
   /** Localized fallback supplied by the caller. */
   fallbackTitle: string;
-  /** Localized label used only when several candidates share one page title. */
-  videoLabel: string;
   manifests?: DashManifestEntry[];
 }
 
@@ -187,7 +185,6 @@ function cleanTitle(raw: string | undefined, fallback: string): string {
 }
 
 function qualityLabel(height?: number, bandwidth?: number): string {
-  if (height && height >= 2160) return "4K";
   if (height && height > 0) return `${height}p`;
   if (bandwidth && bandwidth > 0) return `${Math.round(bandwidth / 1000)}kbps`;
   return "unknown";
@@ -224,7 +221,7 @@ function trackIdentity(
   ].join("|");
 }
 
-/** 将同一分辨率下的普通帧率/高帧率编码合并为用户可选择的画质档。 */
+/** 将同一分辨率、同一帧率的不同编码合并为一个用户可选择的画质档。 */
 export function selectQualityVideoTracks(
   tracks: DashManifest["video"],
 ): DashManifest["video"] {
@@ -232,8 +229,10 @@ export function selectQualityVideoTracks(
   for (const track of tracks) {
     if (track.downloadable === false) continue;
     const height = track.height ?? 0;
-    const frameRateTier = isHighFrameRate(track.frameRate) ? "high" : "normal";
-    const key = `${height}|${frameRateTier}`;
+    const frameRateKey = track.frameRate && track.frameRate > 0
+      ? String(Math.round(track.frameRate))
+      : "unknown";
+    const key = `${height}|${frameRateKey}`;
     const current = selected.get(key);
     if (!current || (track.bandwidth ?? 0) > (current.bandwidth ?? 0)) {
       selected.set(key, track);
@@ -242,15 +241,15 @@ export function selectQualityVideoTracks(
   return Array.from(selected.values());
 }
 
-export function isHighFrameRate(frameRate?: number): boolean {
-  return (frameRate ?? 0) >= 50;
-}
-
 export function qualityResolutionLabel(label: string): string | undefined {
   const normalized = label.trim().toLowerCase();
-  if (normalized === "4k") return "4K";
   const match = /^(\d+)p$/.exec(normalized);
   return match ? `${Number(match[1])}P` : undefined;
+}
+
+export function qualityFrameRateLabel(frameRate?: number): string | undefined {
+  if (!frameRate || !Number.isFinite(frameRate) || frameRate <= 0) return undefined;
+  return `${Math.round(frameRate)}FPS`;
 }
 
 function manifestSignature(manifest: DashManifest): string {
@@ -329,15 +328,6 @@ function relatedManifestResources(
       );
     },
   );
-}
-
-function titleForIndex(
-  base: string,
-  index: number,
-  count: number,
-  videoLabel: string,
-): string {
-  return count > 1 ? `${base} · ${videoLabel} ${index + 1}` : base;
 }
 
 function directVariant(resource: DetectedResource, index: number): MediaCandidateVariant {
@@ -580,12 +570,7 @@ export function buildMediaCandidates(
     });
   }
 
-  // Make duplicate page titles distinguishable without exposing CDN names.
-  const count = candidates.length;
-  return candidates.map((candidate, index) => ({
-    ...candidate,
-    title: titleForIndex(candidate.title, index, count, options.videoLabel),
-  }));
+  return candidates;
 }
 
 function safeFilenamePart(value: string): string {
@@ -616,30 +601,6 @@ export function defaultCandidateVariant(
   candidate: MediaCandidate,
 ): MediaCandidateVariant | undefined {
   return candidate.variants[0];
-}
-
-export type FriendlyQualityKey =
-  | "panel.quality4k"
-  | "panel.quality2k"
-  | "panel.quality1080"
-  | "panel.quality720"
-  | "panel.quality480"
-  | "panel.quality360";
-
-/** 将技术清晰度标签映射为面向普通用户的画质标签。 */
-export function friendlyQualityKey(label: string): FriendlyQualityKey | undefined {
-  const normalized = label.trim().toLowerCase();
-  if (normalized === "4k") return "panel.quality4k";
-  const match = /^(\d+)p$/.exec(normalized);
-  if (!match) return undefined;
-  const height = Number(match[1]);
-  if (height >= 2160) return "panel.quality4k";
-  if (height >= 1440) return "panel.quality2k";
-  if (height >= 1080) return "panel.quality1080";
-  if (height >= 720) return "panel.quality720";
-  if (height >= 480) return "panel.quality480";
-  if (height >= 360) return "panel.quality360";
-  return undefined;
 }
 
 /**
