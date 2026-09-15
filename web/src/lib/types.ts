@@ -649,6 +649,17 @@ export interface PluginDto {
   settingsValues: Record<string, string>
   /** manifest 声明的能力权限（如 ["ffmpeg"]），旧服务端可能缺省。 */
   permissions?: string[]
+  /** 是否声明平台登录入口。旧服务端可能缺省。 */
+  authSupported?: boolean
+}
+
+export interface PluginAuthResponse {
+  status: 'pending' | 'success' | 'error' | string
+  sessionId: string
+  challenge?: string | null
+  challengeType?: string | null
+  message: string
+  authRef?: string | null
 }
 
 export interface InstalledPlugin {

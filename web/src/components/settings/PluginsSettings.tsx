@@ -174,6 +174,7 @@ function DisabledBadge({ reason }: { reason: PluginDto['disabledReason'] }) {
 const PERMISSION_KEYS: Record<string, { label: I18nKey; desc: I18nKey }> = {
   ffmpeg: { label: 'plugins.permFfmpeg', desc: 'plugins.permFfmpegDesc' },
   ytdlp: { label: 'plugins.permYtdlp', desc: 'plugins.permYtdlpDesc' },
+  auth: { label: 'plugins.permAuth', desc: 'plugins.permAuthDesc' },
 }
 
 function PermissionBadges({ permissions }: { permissions?: string[] }) {
@@ -254,9 +255,10 @@ function PluginCard({ plugin }: { plugin: PluginDto }) {
             )}
           </div>
           <div className="flex flex-shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            {plugin.settings.length > 0 && (
+            {(plugin.settings.length > 0 || plugin.authSupported) && (
               <PluginSettingsDialog
                 plugin={plugin}
+                authSupported={plugin.authSupported}
                 saving={settingsMut.isPending}
                 onSave={(entries, onDone) => settingsMut.mutate({ identity: plugin.identity, entries }, { onSuccess: onDone })}
               />

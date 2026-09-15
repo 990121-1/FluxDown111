@@ -596,6 +596,48 @@ pub struct PluginDto {
     /// manifest 声明的能力权限（如 `["ffmpeg"]`，供 UI 展示授权徽章）。
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// 是否声明平台登录入口。
+    #[serde(default)]
+    pub auth_supported: bool,
+}
+
+/// 驱动插件平台登录（二维码/账号登录）的请求。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAuthRequest {
+    #[serde(default)]
+    pub identity: String,
+    /// `begin` / `poll` / `cancel` / `logout` / `status`。
+    pub action: String,
+    #[serde(default)]
+    pub site: String,
+    #[serde(default)]
+    pub auth_ref: String,
+    #[serde(default)]
+    pub session_id: String,
+    /// 账号、验证码或平台登录流程需要的额外输入。
+    #[serde(default)]
+    pub input: String,
+}
+
+/// 插件平台登录交互状态。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAuthResponse {
+    /// `pending` / `success` / `error`。
+    pub status: String,
+    pub session_id: String,
+    /// 二维码文本、data URL 或其他挑战内容。
+    #[serde(default)]
+    pub challenge: Option<String>,
+    #[serde(default)]
+    pub challenge_type: Option<String>,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub auth_ref: Option<String>,
 }
 
 /// 安装 dev 插件请求体。

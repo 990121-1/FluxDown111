@@ -1916,6 +1916,8 @@ class S {
   String get pluginPermFfmpegDesc => _r('pluginPermFfmpegDesc');
   String get pluginPermYtdlpName => _r('pluginPermYtdlpName');
   String get pluginPermYtdlpDesc => _r('pluginPermYtdlpDesc');
+  String get pluginPermAuthName => _r('pluginPermAuthName');
+  String get pluginPermAuthDesc => _r('pluginPermAuthDesc');
   String get pluginPermUnknownDesc => _r('pluginPermUnknownDesc');
   String get pluginDetailUsage => _r('pluginDetailUsage');
   String get pluginDetailUsageBody => _r('pluginDetailUsageBody');
@@ -1928,6 +1930,18 @@ class S {
   // ─────────────────────────────────────────────
   String pluginSettingsDialogTitle(String name) =>
       _r('pluginSettingsDialogTitle', {'name': name});
+  String get pluginAuthButton => _r('pluginAuthButton');
+  String pluginAuthDialogTitle(String name) =>
+      _r('pluginAuthDialogTitle', {'name': name});
+  String get pluginAuthDescription => _r('pluginAuthDescription');
+  String get pluginAuthSitePlaceholder => _r('pluginAuthSitePlaceholder');
+  String get pluginAuthInputPlaceholder => _r('pluginAuthInputPlaceholder');
+  String get pluginAuthBegin => _r('pluginAuthBegin');
+  String get pluginAuthQr => _r('pluginAuthQr');
+  String get pluginAuthPoll => _r('pluginAuthPoll');
+  String get pluginAuthPending => _r('pluginAuthPending');
+  String get pluginAuthSuccess => _r('pluginAuthSuccess');
+  String get pluginAuthLogout => _r('pluginAuthLogout');
   String get pluginSettingsSaveButton => _r('pluginSettingsSaveButton');
   String get pluginSettingsSaving => _r('pluginSettingsSaving');
   String pluginSettingsSaveFailed(String message) =>

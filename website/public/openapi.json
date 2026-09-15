@@ -1393,6 +1393,76 @@
         ]
       }
     },
+    "/api/v1/plugins/{identity}/auth": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "驱动插件登录流程（二维码/账号登录）。认证结果只返回交互状态，凭据由引擎保存。",
+        "operationId": "api_plugin_auth",
+        "parameters": [
+          {
+            "name": "identity",
+            "in": "path",
+            "description": "插件 identity",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginAuthRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "登录交互状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginAuthResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "插件登录失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
     "/api/v1/plugins/{identity}/enabled": {
       "put": {
         "tags": [
@@ -3739,6 +3809,74 @@
           }
         }
       },
+      "PluginAuthRequest": {
+        "type": "object",
+        "description": "驱动插件平台登录（二维码/账号登录）的请求。",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`begin` / `poll` / `cancel`。"
+          },
+          "authRef": {
+            "type": "string"
+          },
+          "identity": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string",
+            "description": "账号、验证码或平台登录流程需要的额外输入。"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          }
+        }
+      },
+      "PluginAuthResponse": {
+        "type": "object",
+        "description": "插件平台登录交互状态。",
+        "required": [
+          "status",
+          "sessionId"
+        ],
+        "properties": {
+          "authRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "challenge": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "二维码文本、data URL 或其他挑战内容。"
+          },
+          "challengeType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending` / `success` / `error`。"
+          }
+        }
+      },
       "PluginDto": {
         "type": "object",
         "description": "已安装插件视图（列表/设置表单）。",
@@ -3753,6 +3891,10 @@
           "settingsValues"
         ],
         "properties": {
+          "authSupported": {
+            "type": "boolean",
+            "description": "是否声明平台登录入口。"
+          },
           "description": {
             "type": "string"
           },

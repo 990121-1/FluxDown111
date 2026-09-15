@@ -23,6 +23,7 @@ import type {
   MarketEntry,
   PingInfo,
   PluginDto,
+  PluginAuthResponse,
   ProxyTestRequest,
   ProxyTestResponse,
   QueueDto,
@@ -249,6 +250,11 @@ export const api = {
     apiFetch<unknown>(`/api/v1/plugins/${identity}/settings`, {
       method: 'PUT',
       body: JSON.stringify(entries),
+    }),
+  pluginAuth: (identity: string, request: { action: string; site?: string; authRef?: string; sessionId?: string; input?: string }) =>
+    apiFetch<PluginAuthResponse>(`/api/v1/plugins/${encodeURIComponent(identity)}/auth`, {
+      method: 'POST',
+      body: JSON.stringify(request),
     }),
   uninstallPlugin: (identity: string) =>
     apiFetch<unknown>(`/api/v1/plugins/${identity}`, { method: 'DELETE' }),

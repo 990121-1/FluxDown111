@@ -402,6 +402,7 @@ fn register_core(state: AppState) -> Router<AppState> {
             )
             .route(routes::API_PLUGIN_ENABLED, put(api_set_plugin_enabled))
             .route(routes::API_PLUGIN_SETTINGS, put(api_update_plugin_settings))
+            .route(routes::API_PLUGIN_AUTH, post(api_plugin_auth))
             .route(
                 routes::API_PLUGIN,
                 axum::routing::delete(api_uninstall_plugin),
@@ -2101,6 +2102,44 @@ pub(crate) async fn api_update_plugin_settings(
         }
     };
     ack(state.host.update_plugin_settings(&identity, entries).await)
+}
+
+/// 驱动插件登录流程（二维码/账号登录）。认证结果只返回交互状态，凭据由引擎保存。
+#[utoipa::path(post, path = "/api/v1/plugins/{identity}/auth", tag = "plugins",
+    params(("identity" = String, Path, description = "插件 identity")),
+    request_body = fluxdown_protocol::daemon::PluginAuthRequest,
+    responses(
+        (status = 200, description = "登录交互状态", body = fluxdown_protocol::daemon::PluginAuthResponse),
+        (status = 400, description = "插件登录失败", body = fluxdown_protocol::daemon::ResultMessage),
+        (status = 401, description = "token 无效", body = fluxdown_protocol::daemon::ResultMessage),
+    ),
+    security(("bearerAuth" = []), ("tokenHeader" = []))
+)]
+pub(crate) async fn api_plugin_auth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(identity): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(resp) = guard(&state, &headers) {
+        return *resp;
+    }
+    let mut request: fluxdown_protocol::daemon::PluginAuthRequest =
+        match serde_json::from_slice(&body) {
+            Ok(request) => request,
+            Err(error) => {
+                return result_response(
+                    StatusCode::BAD_REQUEST,
+                    false,
+                    &format!("invalid payload: {error}"),
+                );
+            }
+        };
+    request.identity = identity;
+    match state.host.plugin_auth(request).await {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => error.into_response(),
+    }
 }
 
 /// 卸载插件。

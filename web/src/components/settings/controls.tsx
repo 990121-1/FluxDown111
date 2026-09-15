@@ -124,12 +124,14 @@ export function SetSelect({
 export function TextInput({
   value,
   onCommit,
+  onChange,
   placeholder,
   password,
   className,
 }: {
   value: string
   onCommit: (v: string) => void
+  onChange?: (v: string) => void
   placeholder?: string
   password?: boolean
   className?: string
@@ -143,7 +145,10 @@ export function TextInput({
       spellCheck={false}
       placeholder={placeholder}
       value={text}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        setText(e.target.value)
+        onChange?.(e.target.value)
+      }}
       onBlur={() => {
         if (text !== value) onCommit(text)
       }}
@@ -219,6 +224,7 @@ export function TextFieldRow({
   desc,
   value,
   onCommit,
+  onChange,
   placeholder,
   password,
 }: {
@@ -226,12 +232,13 @@ export function TextFieldRow({
   desc?: string
   value: string
   onCommit: (v: string) => void
+  onChange?: (v: string) => void
   placeholder?: string
   password?: boolean
 }) {
   return (
     <SetRow title={title} desc={desc}>
-      <TextInput value={value} onCommit={onCommit} placeholder={placeholder} password={password} />
+      <TextInput value={value} onCommit={onCommit} onChange={onChange} placeholder={placeholder} password={password} />
     </SetRow>
   )
 }
@@ -266,12 +273,14 @@ export function TextAreaFieldRow({
   value,
   onCommit,
   placeholder,
+  rows = 4,
 }: {
   title: ReactNode
   desc?: string
   value: string
   onCommit: (v: string) => void
   placeholder?: string
+  rows?: number
 }) {
   return (
     <div className="set-row stack">
@@ -279,7 +288,7 @@ export function TextAreaFieldRow({
         <b>{title}</b>
         {desc ? <span>{desc}</span> : null}
       </div>
-      <TextAreaInput value={value} onCommit={onCommit} placeholder={placeholder} />
+      <TextAreaInput value={value} onCommit={onCommit} placeholder={placeholder} rows={rows} />
     </div>
   )
 }

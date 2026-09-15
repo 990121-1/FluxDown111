@@ -94,6 +94,8 @@ Future<bool> showManifestSelectDialog(
             Navigator.of(context).pop(true);
           },
           onCancel: () => Navigator.of(context).pop(false),
+          // 外层 ShadDialog 已提供关闭按钮，避免摘要栏右上角重复渲染。
+          showCloseButton: false,
         ),
       ),
     ),

@@ -27,9 +27,9 @@ use fluxdown_protocol::daemon::{
     CreateGroupRequest, CreateTaskRequest, DownloadRequest, GroupDto, LinkAuth, LinkCodeResponse,
     LinkDeviceInfo, LinkDiscoveredPeer, LinkPairBeginResponse, LinkPairConfirmOutcome,
     LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo,
-    LinkTaskRequest, MarketEntryDto, PluginDto, QueueDto, ResolvePreviewRequest,
-    ResolvePreviewResponse, RssItemActionRequest, RssItemDto, RssSourceDto, RssValidateRequest,
-    RssValidateResponse, TaskDto,
+    LinkTaskRequest, MarketEntryDto, PluginAuthRequest, PluginAuthResponse, PluginDto, QueueDto,
+    ResolvePreviewRequest, ResolvePreviewResponse, RssItemActionRequest, RssItemDto, RssSourceDto,
+    RssValidateRequest, RssValidateResponse, TaskDto,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -408,6 +408,35 @@ impl ApiHost for ServerApiHost {
             .map_err(|e| ApiError::BadRequest(e.to_string()))?;
         self.hub.broadcast(&WsServerMsg::PluginsChanged {});
         Ok(())
+    }
+
+    /// 驱动插件登录流程；认证凭据由引擎统一保存，后续插件请求自动复用。
+    async fn plugin_auth(
+        &self,
+        request: PluginAuthRequest,
+    ) -> Result<PluginAuthResponse, ApiError> {
+        let pm = self.plugin_manager()?;
+        let result = pm
+            .authenticate(
+                &request.identity,
+                fluxdown_engine::plugin::AuthRequest {
+                    action: request.action,
+                    site: request.site,
+                    auth_ref: request.auth_ref,
+                    session_id: request.session_id,
+                    input: request.input,
+                },
+            )
+            .await
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        Ok(PluginAuthResponse {
+            status: result.status,
+            session_id: result.session_id,
+            challenge: result.challenge,
+            challenge_type: result.challenge_type,
+            message: result.message,
+            auth_ref: result.auth_ref,
+        })
     }
 
     /// 从 zip 字节安装插件；成功后广播 `pluginsChanged`。

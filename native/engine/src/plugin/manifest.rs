@@ -155,6 +155,14 @@ pub struct HooksDecl {
     pub match_decl: Option<MatchDecl>,
 }
 
+/// 平台登录入口。脚本实现 `globalThis.authenticate(ctx)`，由 daemon 以
+/// `begin`/`poll`/`cancel` action 驱动，登录成功后脚本调用 `flux.auth.save`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthDecl {
+    pub entry: String,
+}
+
 /// 插件 manifest。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -175,9 +183,12 @@ pub struct PluginManifest {
     pub resolvers: Vec<ResolverDecl>,
     #[serde(default)]
     pub hooks: Option<HooksDecl>,
+    /// 可选的平台特有登录入口。
+    #[serde(default)]
+    pub auth: Option<AuthDecl>,
     #[serde(default)]
     pub settings: Vec<SettingField>,
-    /// 声明式能力权限（v1 仅 `"ffmpeg"`）。空 = 无额外能力。授予的能力经宿主
+    /// 声明式能力权限（如 `"auth"`、`"ffmpeg"`）。空 = 无额外能力。授予的能力经宿主
     /// 门控注入对应 `flux.*` 门面（见 [`super::runtime::HostContext`]）。
     #[serde(default)]
     pub permissions: Vec<String>,
@@ -190,8 +201,10 @@ pub const VALID_EVENTS: [&str; 4] = ["onStart", "onError", "onDone", "onMetaProb
 pub const PERMISSION_FFMPEG: &str = "ffmpeg";
 /// yt-dlp 能力权限名（manifest `permissions`）。
 pub const PERMISSION_YTDLP: &str = "ytdlp";
+/// 通用认证能力权限名（manifest `permissions`）。
+pub const PERMISSION_AUTH: &str = "auth";
 /// 合法能力权限（manifest `permissions`）。
-pub const VALID_PERMISSIONS: [&str; 2] = [PERMISSION_FFMPEG, PERMISSION_YTDLP];
+pub const VALID_PERMISSIONS: [&str; 3] = [PERMISSION_FFMPEG, PERMISSION_YTDLP, PERMISSION_AUTH];
 
 impl PluginManifest {
     /// 从 JSON 字节解析（不校验语义，仅结构）。

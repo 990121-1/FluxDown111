@@ -57,6 +57,8 @@ pub const API_PLUGINS_INSTALL_DEV: &str = "/api/v1/plugins/install-dev";
 pub const API_PLUGIN_ENABLED: &str = "/api/v1/plugins/{identity}/enabled";
 /// 单插件设置（PUT {key:value}）。
 pub const API_PLUGIN_SETTINGS: &str = "/api/v1/plugins/{identity}/settings";
+/// 驱动插件登录流程（POST begin/poll/cancel）。
+pub const API_PLUGIN_AUTH: &str = "/api/v1/plugins/{identity}/auth";
 /// 卸载单插件（DELETE）。
 pub const API_PLUGIN: &str = "/api/v1/plugins/{identity}";
 /// 任务级逃生舱：忽略插件重试，按原始链接重跑（POST）。

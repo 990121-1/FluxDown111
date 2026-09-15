@@ -34,6 +34,7 @@ pub use manager::{DisabledReason, LoadedPlugin, PluginInfo, PluginManager};
 pub use manifest::{PluginManifest, SettingField, SettingType, SettingWidget};
 pub use market::{MarketClient, MarketEntry, MarketError, MarketIndex};
 pub use runtime::{
-    ExecutionBudget, ManifestItem, ManifestVariant, PluginBridge, PluginError, PluginEvent,
-    PluginLogLevel, ResolveManifest, ResolveRequest, ResolveResult, ResolveVariant, ScriptRuntime,
+    AuthRequest, AuthResult, ExecutionBudget, ManifestItem, ManifestVariant, PluginBridge,
+    PluginError, PluginEvent, PluginLogLevel, ResolveManifest, ResolveRequest, ResolveResult,
+    ResolveVariant, ScriptRuntime,
 };

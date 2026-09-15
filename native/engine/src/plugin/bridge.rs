@@ -381,8 +381,8 @@ impl EngineBridge {
 impl PluginBridge for EngineBridge {
     async fn http_request(
         &self,
-        _plugin_id: &str,
-        req: BridgeHttpRequest,
+        plugin_id: &str,
+        mut req: BridgeHttpRequest,
     ) -> Result<BridgeHttpResponse, PluginError> {
         // scheme 仅 http/https。
         let parsed = url::Url::parse(&req.url)
@@ -401,6 +401,64 @@ impl PluginBridge for EngineBridge {
                 return Err(PluginError::InvalidOutput(
                     "blocked: non-routable IP".to_string(),
                 ));
+            }
+        }
+
+        let explicit_auth_ref = req.auth_ref.is_some();
+        let auth_ref = req
+            .auth_ref
+            .clone()
+            .or_else(|| crate::auth::default_auth_ref(plugin_id, &req.url));
+        if explicit_auth_ref && !req.auth_allowed {
+            return Err(PluginError::Runtime(
+                "插件未声明 auth 权限，不能使用认证凭据".to_string(),
+            ));
+        }
+        if req.auth_allowed
+            && let Some(auth_ref) = auth_ref
+        {
+            match crate::auth::load(&self.db, &auth_ref)
+                .await
+                .map_err(|e| PluginError::Runtime(format!("读取认证凭据失败: {e:#}")))?
+            {
+                Some(profile) => {
+                    if profile.plugin_id != plugin_id {
+                        return Err(PluginError::Runtime("认证凭据不属于当前插件".to_string()));
+                    }
+                    if crate::auth::site_key(&req.url).as_deref() != Some(profile.site.as_str()) {
+                        return Err(PluginError::Runtime(
+                            "认证凭据不属于当前请求站点".to_string(),
+                        ));
+                    }
+                    if !profile.is_valid_at(crate::auth::now_unix()) {
+                        return Err(PluginError::Runtime(format!(
+                            "authentication_required: 认证凭据已过期 {auth_ref}"
+                        )));
+                    }
+                    profile.apply_to_headers(&mut req.headers);
+                }
+                None if explicit_auth_ref => {
+                    return Err(PluginError::Runtime(format!(
+                        "authentication_required: 未找到认证凭据 {auth_ref}"
+                    )));
+                }
+                None => {
+                    // 兼容现有 site_auth_credentials：Basic 仍由旧设置入口保存，
+                    // 新插件 bridge 允许在迁移期间直接复用它。
+                    if let Some(site) = crate::site_auth::site_key(&req.url)
+                        && let Ok(Some(json)) = self
+                            .db
+                            .get_config(crate::site_auth::SITE_AUTH_CONFIG_KEY)
+                            .await
+                        && let Some(credential) = crate::site_auth::parse_store(&json).get(&site)
+                    {
+                        crate::site_auth::inject_basic_auth(
+                            &mut req.headers,
+                            &credential.user,
+                            &credential.pass,
+                        );
+                    }
+                }
             }
         }
 
@@ -430,12 +488,21 @@ impl PluginBridge for EngineBridge {
         let mut resp = rb
             .send()
             .await
-            .map_err(|e| PluginError::Runtime(format!("fetch 失败: {e}")))?;
+            .map_err(|e| PluginError::Runtime(format!("fetch 失败: {e:?}")))?;
         let status = resp.status().as_u16();
         let mut headers = std::collections::HashMap::new();
         for (k, v) in resp.headers() {
             if let Ok(s) = v.to_str() {
-                headers.insert(k.as_str().to_string(), s.to_string());
+                // HeaderMap 允许同名响应头（尤其是多个 Set-Cookie）。不能直接
+                // insert 到 HashMap，否则只会保留最后一个 Cookie，导致登录看似
+                // 成功但后续播放请求缺少 SESSDATA/bili_jct 等关键认证字段。
+                headers
+                    .entry(k.as_str().to_string())
+                    .and_modify(|existing: &mut String| {
+                        existing.push('\n');
+                        existing.push_str(s);
+                    })
+                    .or_insert_with(|| s.to_string());
             }
         }
 
@@ -463,6 +530,69 @@ impl PluginBridge for EngineBridge {
             body: String::from_utf8_lossy(&body).to_string(),
             truncated,
         })
+    }
+
+    async fn auth_get(
+        &self,
+        plugin_id: &str,
+        auth_ref: &str,
+    ) -> Result<Option<crate::auth::AuthProfile>, PluginError> {
+        let Some(profile) = crate::auth::load(&self.db, auth_ref)
+            .await
+            .map_err(|e| PluginError::Runtime(format!("读取认证凭据失败: {e:#}")))?
+        else {
+            return Ok(None);
+        };
+        if profile.plugin_id != plugin_id {
+            return Err(PluginError::Runtime("认证凭据不属于当前插件".to_string()));
+        }
+        Ok(Some(profile))
+    }
+
+    async fn auth_save(
+        &self,
+        plugin_id: &str,
+        mut profile: crate::auth::AuthProfile,
+    ) -> Result<String, PluginError> {
+        if profile.site.trim().is_empty() {
+            return Err(PluginError::InvalidOutput(
+                "认证档案必须提供 site".to_string(),
+            ));
+        }
+        profile.plugin_id = plugin_id.to_string();
+        profile.site = crate::auth::normalize_site(&profile.site).ok_or_else(|| {
+            PluginError::InvalidOutput("认证档案的 site 必须是有效的 URL 或 host".to_string())
+        })?;
+        if profile.auth_ref.is_empty() {
+            profile.auth_ref = format!("{plugin_id}::{}", profile.site.trim().to_ascii_lowercase());
+        } else if !profile.auth_ref.starts_with(&format!("{plugin_id}::")) {
+            return Err(PluginError::InvalidOutput(
+                "authRef 必须属于当前插件".to_string(),
+            ));
+        }
+        let size = serde_json::to_vec(&profile)
+            .map_err(|e| PluginError::Runtime(format!("序列化认证档案失败: {e}")))?
+            .len();
+        if size > MAX_STORAGE_VALUE {
+            return Err(PluginError::InvalidOutput(format!(
+                "认证档案超过 {MAX_STORAGE_VALUE} 字节上限"
+            )));
+        }
+        crate::auth::save(&self.db, &profile)
+            .await
+            .map_err(|e| PluginError::Runtime(format!("保存认证凭据失败: {e:#}")))?;
+        Ok(profile.auth_ref)
+    }
+
+    async fn auth_remove(&self, plugin_id: &str, auth_ref: &str) -> Result<(), PluginError> {
+        if !auth_ref.starts_with(&format!("{plugin_id}::")) {
+            return Err(PluginError::InvalidOutput(
+                "authRef 必须属于当前插件".to_string(),
+            ));
+        }
+        crate::auth::remove(&self.db, auth_ref)
+            .await
+            .map_err(|e| PluginError::Runtime(format!("删除认证凭据失败: {e:#}")))
     }
 
     async fn storage_get(&self, plugin_id: &str, key: &str) -> Option<String> {

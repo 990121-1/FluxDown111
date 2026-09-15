@@ -2,10 +2,12 @@
 // （zip 上传 / 目录 + 开发模式）+ 插件市场浏览/安装。
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'flux_sonner.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -40,6 +42,7 @@ class _PluginListViewState extends State<PluginListView> {
   int _lastOpSeq = -1;
   bool _installingZip = false;
   bool _installingDir = false;
+
   /// 开发模式开关跨页面导航保持（切走设置分类会销毁 State，
   /// 用 static 记住本次会话的选择，避免每次回来都重置为默认开）。
   static bool _devModeSticky = true;
@@ -185,6 +188,18 @@ class _PluginListViewState extends State<PluginListView> {
     );
   }
 
+  void _showPluginAuth(PluginInfoSignal plugin) {
+    final c = AppColors.of(context);
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (_) =>
+          _PluginAuthDialog(plugin: plugin, provider: widget.provider),
+    );
+  }
+
   /// 组件名 → 设置页展示名（与「组件」分类标题一致）。
   String _componentDisplayName(String component) {
     final s = currentS;
@@ -274,6 +289,7 @@ class _PluginListViewState extends State<PluginListView> {
                 plugin: p,
                 provider: provider,
                 onUninstall: () => _confirmUninstall(p),
+                onAuth: () => _showPluginAuth(p),
               ),
             ),
         const SizedBox(height: 26),
@@ -432,11 +448,13 @@ class _PluginCard extends StatelessWidget {
   final PluginInfoSignal plugin;
   final PluginProvider provider;
   final VoidCallback onUninstall;
+  final VoidCallback onAuth;
 
   const _PluginCard({
     required this.plugin,
     required this.provider,
     required this.onUninstall,
+    required this.onAuth,
   });
 
   @override
@@ -544,6 +562,15 @@ class _PluginCard extends StatelessWidget {
                     provider: provider,
                   ),
                 ),
+              if (plugin.authSupported)
+                ShadIconButton.ghost(
+                  icon: Icon(
+                    LucideIcons.logIn,
+                    size: 16,
+                    color: c.textSecondary,
+                  ),
+                  onPressed: onAuth,
+                ),
               ShadIconButton.ghost(
                 icon: Icon(LucideIcons.trash2, size: 16, color: AppColors.red),
                 onPressed: onUninstall,
@@ -552,6 +579,225 @@ class _PluginCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _PluginAuthDialog extends StatefulWidget {
+  final PluginInfoSignal plugin;
+  final PluginProvider provider;
+
+  const _PluginAuthDialog({required this.plugin, required this.provider});
+
+  @override
+  State<_PluginAuthDialog> createState() => _PluginAuthDialogState();
+}
+
+class _PluginAuthDialogState extends State<_PluginAuthDialog> {
+  int _lastSeq = -1;
+  String _sessionId = '';
+  String _authRef = '';
+  String _status = '';
+  String _challenge = '';
+  String _challengeType = '';
+  String _message = '';
+  // 对话框打开即查询登录态；首帧不能先显示“开始登录”按钮。
+  bool _busy = true;
+  bool _initialAuthCheck = true;
+  bool _autoBeginAttempted = false;
+  Timer? _pollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _lastSeq = widget.provider.authResultSeq;
+    widget.provider.addListener(_onProviderChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshSavedAuth());
+  }
+
+  @override
+  void dispose() {
+    widget.provider.removeListener(_onProviderChanged);
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onProviderChanged() {
+    if (!mounted || widget.provider.authResultSeq == _lastSeq) return;
+    _lastSeq = widget.provider.authResultSeq;
+    final result = widget.provider.lastAuthResult;
+    if (result == null || result.identity != widget.plugin.identity) return;
+    final shouldAutoBegin =
+        _initialAuthCheck &&
+        !_autoBeginAttempted &&
+        result.status == 'error' &&
+        result.sessionId.isEmpty &&
+        result.message.isEmpty;
+    _initialAuthCheck = false;
+    setState(() {
+      // 未登录时立即衔接 begin，避免中间一帧显示“开始登录”按钮。
+      _busy = shouldAutoBegin;
+      _status = result.status;
+      _sessionId = result.status == 'pending' ? result.sessionId : '';
+      _authRef = result.status == 'success' ? result.authRef : '';
+      _challenge = result.challenge;
+      _challengeType = result.challengeType;
+      _message = result.message;
+    });
+    if (shouldAutoBegin) {
+      _autoBeginAttempted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        // 在同一个回调中释放 status 的 busy，再立刻发起 begin，
+        // 中间不让 Flutter 绘制出开始登录按钮。
+        setState(() => _busy = false);
+        _submit();
+      });
+    }
+    if (result.status == 'pending' &&
+        result.challengeType.toLowerCase() == 'qrcode') {
+      _startPolling();
+    } else if (result.status != 'pending') {
+      _pollTimer?.cancel();
+    }
+  }
+
+  void _refreshSavedAuth() {
+    if (!mounted) return;
+    widget.provider.authenticate(
+      identity: widget.plugin.identity,
+      action: 'status',
+    );
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted || _busy || _sessionId.isEmpty) return;
+      _submit();
+    });
+  }
+
+  void _submit() {
+    if (_busy) return;
+    setState(() => _busy = true);
+    widget.provider.authenticate(
+      identity: widget.plugin.identity,
+      action: _sessionId.isEmpty ? 'begin' : 'poll',
+      authRef: _authRef,
+      sessionId: _sessionId,
+    );
+  }
+
+  void _logout() {
+    if (_busy) return;
+    setState(() => _busy = true);
+    _pollTimer?.cancel();
+    widget.provider.authenticate(
+      identity: widget.plugin.identity,
+      action: 'logout',
+      authRef: _authRef,
+    );
+  }
+
+  void _cancel() {
+    if (_sessionId.isNotEmpty) {
+      widget.provider.authenticate(
+        identity: widget.plugin.identity,
+        action: 'cancel',
+        authRef: _authRef,
+        sessionId: _sessionId,
+      );
+    }
+    Navigator.of(context).pop();
+  }
+
+  Widget _challengeWidget() {
+    if (_challenge.isEmpty) return const SizedBox.shrink();
+    if (_challenge.startsWith('data:image/')) {
+      final comma = _challenge.indexOf(',');
+      if (comma > 0) {
+        try {
+          final bytes = base64Decode(_challenge.substring(comma + 1));
+          return Image.memory(
+            bytes,
+            height: 220,
+            width: 220,
+            fit: BoxFit.contain,
+          );
+        } on FormatException catch (_) {
+          // Fall through to text representation.
+        }
+      }
+    }
+    if (_challengeType.toLowerCase() == 'qrcode') {
+      return QrImageView(
+        data: _challenge,
+        size: 240,
+        backgroundColor: const Color(0xffffffff),
+        padding: const EdgeInsets.all(10),
+      );
+    }
+    return Text(_challenge);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = currentS;
+    final c = AppColors.of(context);
+    return ShadDialog(
+      title: Text(s.pluginAuthDialogTitle(widget.plugin.name)),
+      description: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(s.pluginAuthDescription),
+            if (_busy && _challenge.isEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                s.pluginCommonLoading,
+                style: TextStyle(color: c.textSecondary),
+              ),
+            ],
+            if (_challenge.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: c.surface2,
+                  borderRadius: AppMetrics.of(context).brDialog,
+                ),
+                child: Column(children: [_challengeWidget()]),
+              ),
+            ],
+            if (_message.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                _message,
+                style: TextStyle(
+                  color: _status == 'success'
+                      ? AppColors.green
+                      : _status == 'error'
+                      ? AppColors.red
+                      : c.textSecondary,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        if (_sessionId.isNotEmpty && _status == 'pending')
+          ShadButton.outline(
+            onPressed: _busy ? null : _cancel,
+            child: Text(s.cancel),
+          ),
+        if (_authRef.isNotEmpty && _status == 'success')
+          ShadButton.outline(
+            onPressed: _busy ? null : _logout,
+            child: Text(s.pluginAuthLogout),
+          ),
+      ],
     );
   }
 }

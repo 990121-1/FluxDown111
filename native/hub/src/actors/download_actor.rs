@@ -26,10 +26,10 @@ use crate::protocol_registry;
 use crate::rinf_selection::RinfHostSelection;
 use crate::rinf_sink::RinfEventSink;
 use crate::signals::{
-    BatchControlTask, BatchCreateTask, CheckFileAssociation, CheckForUpdate, CheckUrlProtocol,
-    ClearWebhookDeliveries, ConfigEntry, ConfigLoaded, ConfirmExternalDownload, ControlTask,
-    CopyPathToClipboard, CopyPathToClipboardResult, CreateQueue, CreateRssSource, CreateTask,
-    CreateTaskGroup, DeleteQueue, DeleteRssSource, DetectSystemProxy, DownloadUpdate,
+    AuthenticatePlugin, BatchControlTask, BatchCreateTask, CheckFileAssociation, CheckForUpdate,
+    CheckUrlProtocol, ClearWebhookDeliveries, ConfigEntry, ConfigLoaded, ConfirmExternalDownload,
+    ControlTask, CopyPathToClipboard, CopyPathToClipboardResult, CreateQueue, CreateRssSource,
+    CreateTask, CreateTaskGroup, DeleteQueue, DeleteRssSource, DetectSystemProxy, DownloadUpdate,
     Ed2kServerSubscriptionResult, ExternalDownloadRequest, FfmpegInstallProgress,
     FfmpegInstallResult, FfmpegStatusReport, FfmpegVersionList, FileAssociationStatus,
     GroupControl, IgnorePluginRetry, InstallFfmpeg, InstallMarketPlugin, InstallPlugin,
@@ -638,6 +638,7 @@ pub async fn run(db_dir: PathBuf) -> Result<(), ActorError> {
     let install_plugin_recv = InstallPlugin::get_dart_signal_receiver();
     let uninstall_plugin_recv = UninstallPlugin::get_dart_signal_receiver();
     let set_plugin_enabled_recv = SetPluginEnabled::get_dart_signal_receiver();
+    let authenticate_plugin_recv = AuthenticatePlugin::get_dart_signal_receiver();
     let save_plugin_settings_recv = SavePluginSettings::get_dart_signal_receiver();
     let ignore_plugin_retry_recv = IgnorePluginRetry::get_dart_signal_receiver();
     let request_market_index_recv = RequestMarketIndex::get_dart_signal_receiver();
@@ -659,6 +660,7 @@ pub async fn run(db_dir: PathBuf) -> Result<(), ActorError> {
         InstallPlugin(InstallPlugin),
         UninstallPlugin(UninstallPlugin),
         SetPluginEnabled(SetPluginEnabled),
+        AuthenticatePlugin(AuthenticatePlugin),
         SavePluginSettings(SavePluginSettings),
         IgnorePluginRetry(IgnorePluginRetry),
         RequestMarketIndex,
@@ -679,6 +681,9 @@ pub async fn run(db_dir: PathBuf) -> Result<(), ActorError> {
                 }
                 Some(signal) = set_plugin_enabled_recv.recv() => {
                     let _ = plugin_cmd_tx.send(PluginHubCmd::SetPluginEnabled(signal.message)).await;
+                }
+                Some(signal) = authenticate_plugin_recv.recv() => {
+                    let _ = plugin_cmd_tx.send(PluginHubCmd::AuthenticatePlugin(signal.message)).await;
                 }
                 Some(signal) = save_plugin_settings_recv.recv() => {
                     let _ = plugin_cmd_tx.send(PluginHubCmd::SavePluginSettings(signal.message)).await;
@@ -2263,6 +2268,59 @@ pub async fn run(db_dir: PathBuf) -> Result<(), ActorError> {
                                 finish_plugin_op(&pm, "set_enabled", &msg.identity, result, Vec::new()).await;
                             } else {
                                 notify_plugin_manager_unavailable("set_enabled", &msg.identity).await;
+                            }
+                        }
+                    }
+                    PluginHubCmd::AuthenticatePlugin(msg) => {
+                        #[cfg(hub_plugins)]
+                        {
+                            if let Some(pm) = engine.manager.plugin_manager() {
+                                let identity = msg.identity.clone();
+                                let session_id = msg.session_id.clone();
+                                let result = pm
+                                    .authenticate(
+                                        &identity,
+                                        fluxdown_engine::plugin::AuthRequest {
+                                            action: msg.action,
+                                            site: msg.site,
+                                            auth_ref: msg.auth_ref,
+                                            session_id: msg.session_id,
+                                            input: msg.input,
+                                        },
+                                    )
+                                    .await;
+                                let result = match result {
+                                    Ok(result) => crate::signals::PluginAuthResult {
+                                        identity,
+                                        status: result.status,
+                                        session_id: result.session_id,
+                                        challenge: result.challenge.unwrap_or_default(),
+                                        challenge_type: result.challenge_type.unwrap_or_default(),
+                                        message: result.message,
+                                        auth_ref: result.auth_ref.unwrap_or_default(),
+                                    },
+                                    Err(error) => crate::signals::PluginAuthResult {
+                                        identity,
+                                        status: "error".to_string(),
+                                        session_id,
+                                        challenge: String::new(),
+                                        challenge_type: String::new(),
+                                        message: error.to_string(),
+                                        auth_ref: String::new(),
+                                    },
+                                };
+                                result.send_signal_to_dart();
+                            } else {
+                                crate::signals::PluginAuthResult {
+                                    identity: msg.identity,
+                                    status: "error".to_string(),
+                                    session_id: msg.session_id,
+                                    challenge: String::new(),
+                                    challenge_type: String::new(),
+                                    message: "插件系统未启用".to_string(),
+                                    auth_ref: String::new(),
+                                }
+                                .send_signal_to_dart();
                             }
                         }
                     }

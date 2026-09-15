@@ -17,13 +17,14 @@ use crate::events::{EngineEvent, EventSink};
 use crate::logger::log_info;
 
 use super::manifest::{
-    PERMISSION_FFMPEG, PERMISSION_YTDLP, PluginManifest, SettingField, SettingType,
-    is_safe_relative_path,
+    PERMISSION_AUTH, PERMISSION_FFMPEG, PERMISSION_YTDLP, PluginManifest, SettingField,
+    SettingType, is_safe_relative_path,
 };
 use super::quickjs::HARD_TIMEOUT_CEILING;
 use super::runtime::{
-    ExecutionBudget, HostContext, ManifestItem, PluginBridge, PluginEntryKind, PluginError,
-    PluginEvent, PluginScript, ResolveManifest, ResolveRequest, ResolveResult, ScriptRuntime,
+    AuthRequest, AuthResult, ExecutionBudget, HostContext, ManifestItem, PluginBridge,
+    PluginEntryKind, PluginError, PluginEvent, PluginScript, ResolveManifest, ResolveRequest,
+    ResolveResult, ScriptRuntime,
 };
 
 /// 连续超时/超内存达到该次数 → 自动熔断禁用。
@@ -85,9 +86,12 @@ pub struct LoadedPlugin {
     resolver_entry: Option<PathBuf>,
     /// hooks 入口绝对路径（若声明）。
     hooks_entry: Option<PathBuf>,
+    /// auth 入口绝对路径（若声明）。
+    auth_entry: Option<PathBuf>,
     /// 非 dev 模式的缓存源码（加载时读入）。
     resolver_cache: Option<String>,
     hooks_cache: Option<String>,
+    auth_cache: Option<String>,
     /// 熔断计数（连续 Timeout/MemoryLimit）。
     timeout_streak: Arc<AtomicU32>,
 }
@@ -104,6 +108,14 @@ impl LoadedPlugin {
         match (&self.hooks_entry, self.dev) {
             (Some(p), true) => tokio::fs::read_to_string(p).await.ok(),
             (Some(_), false) => self.hooks_cache.clone(),
+            (None, _) => None,
+        }
+    }
+
+    async fn auth_source(&self) -> Option<String> {
+        match (&self.auth_entry, self.dev) {
+            (Some(p), true) => tokio::fs::read_to_string(p).await.ok(),
+            (Some(_), false) => self.auth_cache.clone(),
             (None, _) => None,
         }
     }
@@ -125,6 +137,8 @@ pub struct PluginInfo {
     pub settings_values: Vec<(String, String)>,
     /// manifest 声明的能力权限（供 UI 展示授权，如 `["ffmpeg"]`）。
     pub permissions: Vec<String>,
+    /// 是否声明平台登录入口。
+    pub auth_supported: bool,
 }
 
 /// 安装来源判别（供 actor 分发规则表）。
@@ -237,6 +251,7 @@ impl PluginManager {
 
         let resolver_entry = manifest.resolvers.first().map(|r| dir.join(&r.entry));
         let hooks_entry = manifest.hooks.as_ref().map(|h| dir.join(&h.entry));
+        let auth_entry = manifest.auth.as_ref().map(|a| dir.join(&a.entry));
 
         // 死订阅检查：同时声明 resolver 与订阅 onMetaProbed → warn（带 resolver 的
         // 任务跳过 probe，onMetaProbed 不会触发）。
@@ -251,8 +266,8 @@ impl PluginManager {
         }
 
         // 非 dev：加载时读入源码缓存。
-        let (resolver_cache, hooks_cache) = if dev {
-            (None, None)
+        let (resolver_cache, hooks_cache, auth_cache) = if dev {
+            (None, None, None)
         } else {
             let rc = match &resolver_entry {
                 Some(p) => match tokio::fs::read_to_string(p).await {
@@ -277,7 +292,17 @@ impl PluginManager {
                 },
                 None => None,
             };
-            (rc, hc)
+            let ac = match &auth_entry {
+                Some(p) => match tokio::fs::read_to_string(p).await {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        log_info!("[plugin] 跳过 {}: 读取 auth 失败: {e}", manifest.identity);
+                        return None;
+                    }
+                },
+                None => None,
+            };
+            (rc, hc, ac)
         };
 
         let identity = manifest.identity.clone();
@@ -308,8 +333,10 @@ impl PluginManager {
             disabled_reason,
             resolver_entry,
             hooks_entry,
+            auth_entry,
             resolver_cache,
             hooks_cache,
+            auth_cache,
             timeout_streak: Arc::new(AtomicU32::new(0)),
         })
     }
@@ -371,7 +398,7 @@ impl PluginManager {
     pub async fn resolve(
         &self,
         identity: &str,
-        req: ResolveRequest,
+        mut req: ResolveRequest,
     ) -> Result<Option<ResolveResult>, PluginError> {
         // 从快照克隆所需（避免跨 await 持锁）。
         let (manifest, streak, source, dev_ver) = {
@@ -424,6 +451,13 @@ impl PluginManager {
             version: dev_ver,
             app_version: self.app_version.clone(),
         };
+        // 每次 resolve 都把同一插件/站点映射到稳定认证引用。插件无需把 Cookie
+        // 放进自己的 KV，也无需在每次调用时重新登录。
+        if req.auth_ref.is_empty()
+            && let Some(auth_ref) = crate::auth::default_auth_ref(identity, &req.url)
+        {
+            req.auth_ref = auth_ref;
+        }
         // 二段防递归判定须在 req 被 invoke_resolve 消费前捕获。
         let second_stage = !req.resolver_item.is_empty();
 
@@ -438,6 +472,7 @@ impl PluginManager {
                 HostContext {
                     // resolve 平面授予 yt-dlp（直链提取的主战场）；ffmpeg 无产物牢笼故不授予。
                     ytdlp_permitted: manifest.has_permission(PERMISSION_YTDLP),
+                    auth_permitted: manifest.has_permission(PERMISSION_AUTH),
                     ..Default::default()
                 },
             )
@@ -461,6 +496,92 @@ impl PluginManager {
         let result = result?;
         if let Some(res) = &result {
             validate_resolve_output(res, second_stage)?;
+        }
+        Ok(result)
+    }
+
+    /// 执行插件平台登录入口。登录状态由插件通过 `flux.auth.save` 写入宿主，
+    /// 本方法只负责驱动 begin/poll/cancel/logout 并把二维码挑战返回给 UI。
+    pub async fn authenticate(
+        &self,
+        identity: &str,
+        mut req: AuthRequest,
+    ) -> Result<AuthResult, PluginError> {
+        let (manifest, source, version) = {
+            let snapshot = self.plugins.read().await.clone();
+            let Some(plugin) = snapshot.iter().find(|p| p.manifest.identity == identity) else {
+                return Err(PluginError::Runtime(format!("插件 {identity} 不存在")));
+            };
+            if !plugin.enabled {
+                return Err(PluginError::Runtime(format!("插件 {identity} 未启用")));
+            }
+            if !plugin.manifest.has_permission(PERMISSION_AUTH) {
+                return Err(PluginError::Runtime(format!(
+                    "插件 {identity} 未声明 auth 权限"
+                )));
+            }
+            let Some(source) = plugin.auth_source().await else {
+                return Err(PluginError::Runtime(format!(
+                    "插件 {identity} 未提供 auth 入口"
+                )));
+            };
+            (
+                plugin.manifest.clone(),
+                source,
+                plugin.manifest.version.clone(),
+            )
+        };
+
+        if !matches!(
+            req.action.as_str(),
+            "begin" | "poll" | "cancel" | "logout" | "status"
+        ) {
+            return Err(PluginError::InvalidOutput(
+                "auth action 必须是 begin/poll/cancel/logout/status".to_string(),
+            ));
+        }
+        if req.auth_ref.is_empty()
+            && !req.site.trim().is_empty()
+            && let Some(site) = crate::auth::normalize_site(&req.site)
+        {
+            req.auth_ref = format!("{identity}::{site}");
+        }
+
+        let values = self.load_setting_values(identity).await;
+        for field in &manifest.settings {
+            if field.required && value_of(&values, field).is_none() {
+                return Err(PluginError::MissingRequiredSetting(format!(
+                    "插件 {identity} 需先配置「{}」",
+                    field.title
+                )));
+            }
+        }
+
+        let script = PluginScript {
+            identity: identity.to_string(),
+            source,
+            entry_fn_hint: PluginEntryKind::Auth,
+            version,
+            app_version: self.app_version.clone(),
+        };
+        let requested_auth_ref = req.auth_ref.clone();
+        let mut result = self
+            .runtime
+            .invoke_auth(
+                &script,
+                req,
+                build_typed_settings_json(&manifest, &values),
+                self.bridge.clone(),
+                self.resolve_budget_for(&manifest),
+                HostContext {
+                    auth_permitted: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        if result.status == "success" && result.auth_ref.is_none() && !requested_auth_ref.is_empty()
+        {
+            result.auth_ref = Some(requested_auth_ref);
         }
         Ok(result)
     }
@@ -505,6 +626,7 @@ impl PluginManager {
             // hook 墙钟预算；牢笼根 = 产物所在目录。其余事件/未授权 → 无 ffmpeg。
             let ffmpeg_permitted = p.manifest.has_permission(PERMISSION_FFMPEG);
             let ytdlp_permitted = p.manifest.has_permission(PERMISSION_YTDLP);
+            let auth_permitted = p.manifest.has_permission(PERMISSION_AUTH);
             let ffmpeg_root = match &event {
                 PluginEvent::Done { file_path, .. } => {
                     Path::new(file_path).parent().map(Path::to_path_buf)
@@ -515,6 +637,7 @@ impl PluginManager {
                 ffmpeg_permitted,
                 ffmpeg_root,
                 ytdlp_permitted,
+                auth_permitted,
             };
             // 授权外部工具（ffmpeg 有产物牢笼 / yt-dlp 任意上下文）→ 抬升墙钟预算。
             let budget = if (ffmpeg_permitted && host.ffmpeg_root.is_some()) || ytdlp_permitted {
@@ -873,6 +996,7 @@ impl PluginManager {
                 settings: p.manifest.settings.clone(),
                 settings_values: values.into_iter().collect(),
                 permissions: p.manifest.permissions.clone(),
+                auth_supported: p.manifest.auth.is_some(),
             });
         }
         out

@@ -26,6 +26,7 @@ use super::Frame;
 use crate::{
     ExtensionsTab, ExtensionsView,
     components::{
+        plugin_auth::PluginAuthDialog,
         plugin_detail::{PluginDetail, open_plugin_detail, yanked_label},
         plugin_settings::PluginSettingsForm,
     },
@@ -456,6 +457,20 @@ impl ExtensionsView {
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_plugin_settings(&identity, window, cx);
+                        })),
+                )
+            })
+            .when(plugin.auth_supported, |this| {
+                let identity = identity.clone();
+                this.child(
+                    Button::new(("plugin-auth", index))
+                        .outline()
+                        .small()
+                        .h(CONTROL_HEIGHT)
+                        .label(translator.text("pluginAuthButton").to_owned())
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_plugin_auth(&identity, window, cx);
                         })),
                 )
             })
@@ -1022,6 +1037,28 @@ impl ExtensionsView {
                                 }),
                         ),
                 )
+        });
+    }
+
+    fn open_plugin_auth(&self, identity: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(plugin) = self.controller.plugin(identity) else {
+            return;
+        };
+        let translator = self.translator.clone();
+        let port = self.controller.port().clone();
+        let identity = plugin.identity.clone();
+        let title = SharedString::from(
+            self.translator
+                .read(cx)
+                .text_with("pluginAuthDialogTitle", &[("name", &plugin.name)]),
+        );
+        let dialog = cx.new(|cx| PluginAuthDialog::new(translator, port, identity, window, cx));
+        window.open_dialog(cx, move |dialog_view, _, _| {
+            let dialog_for_content = dialog.clone();
+            dialog_view
+                .title(title.clone())
+                .w(px(460.))
+                .content(move |content, _, _| content.child(dialog_for_content.clone()))
         });
     }
 }

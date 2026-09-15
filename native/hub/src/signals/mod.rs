@@ -1115,6 +1115,17 @@ pub struct SetPluginEnabled {
     pub enabled: bool,
 }
 
+/// Drive a plugin login flow (begin/poll/cancel; Dart → Rust).
+#[derive(Deserialize, DartSignal)]
+pub struct AuthenticatePlugin {
+    pub identity: String,
+    pub action: String,
+    pub site: String,
+    pub auth_ref: String,
+    pub session_id: String,
+    pub input: String,
+}
+
 /// Save a plugin's settings values (Dart → Rust).
 #[derive(Deserialize, DartSignal)]
 pub struct SavePluginSettings {
@@ -1153,6 +1164,18 @@ pub struct PluginOpResult {
     pub message: String,
     pub failed_key: String,
     pub missing_components: Vec<String>,
+}
+
+/// Result of one plugin login step (Rust → Dart).
+#[derive(Serialize, RustSignal)]
+pub struct PluginAuthResult {
+    pub identity: String,
+    pub status: String,
+    pub session_id: String,
+    pub challenge: String,
+    pub challenge_type: String,
+    pub message: String,
+    pub auth_ref: String,
 }
 
 /// A plugin was auto-disabled by the circuit breaker (Rust → Dart).
@@ -1200,6 +1223,8 @@ pub struct PluginInfoSignal {
     pub settings_values: Vec<ConfigEntry>,
     /// manifest 声明的能力权限（如 `["ffmpeg"]`，供 UI 展示授权徽章）。
     pub permissions: Vec<String>,
+    /// Whether the plugin exposes a platform login entry.
+    pub auth_supported: bool,
 }
 
 #[cfg(hub_plugins)]
@@ -1221,6 +1246,7 @@ impl From<fluxdown_engine::plugin::PluginInfo> for PluginInfoSignal {
                 .map(|(key, value)| ConfigEntry { key, value })
                 .collect(),
             permissions: info.permissions,
+            auth_supported: info.auth_supported,
         }
     }
 }

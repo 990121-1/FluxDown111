@@ -365,6 +365,7 @@ pub fn plugin_info_to_dto(
             .collect(),
         settings_values: plugin.settings_values.into_iter().collect(),
         permissions: plugin.permissions,
+        auth_supported: plugin.auth_supported,
     }
 }
 
