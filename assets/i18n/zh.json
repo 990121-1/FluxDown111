@@ -1567,6 +1567,8 @@
   "rssNameLabel": "名称",
   "rssNameHint": "留空则用 feed 标题",
   "rssIntervalLabel": "抓取间隔",
+  "rssProviderLabel": "订阅提供方",
+  "rssProviderPluginHint": "此订阅将由选中的插件抓取。请在“设置 > 插件”中配置插件，无需另外添加订阅调用配置。",
   "rssUrlLabel": "订阅链接（RSS 2.0 / Atom / JSON Feed）",
   "rssUrlHint": "https://…",
   "rssQueueLabel": "目标队列",
