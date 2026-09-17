@@ -246,14 +246,6 @@ impl RssManager {
         self.sources.iter().find(|s| s.source_id == source_id)
     }
 
-    /// 注册或替换一个订阅 provider。
-    ///
-    /// provider 只负责抓取和规范化数据；调度、退避、去重、过滤、落库与建
-    /// 任务仍由 [`RssManager`] 统一处理。通常由启用插件的宿主在启动时调用。
-    pub fn register_provider(&mut self, provider: Arc<dyn SubscriptionProvider>) {
-        self.providers.insert(provider.id().to_string(), provider);
-    }
-
     /// 设置未命中固定 provider map 时使用的动态路由器。
     pub fn set_fallback_provider(&mut self, provider: Arc<dyn SubscriptionProvider>) {
         self.fallback_provider = Some(provider);

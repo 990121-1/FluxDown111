@@ -1787,8 +1787,8 @@ pub struct RssSourceEntry {
     /// UUID；创建时留空由引擎生成。
     #[serde(default)]
     pub source_id: String,
-    /// 来源 provider 的稳定 ID；缺省为内置 RSS provider。
-    #[serde(default = "default_rss_provider_id")]
+    /// 来源 provider 的稳定 ID；空值由引擎 `RssSourceInfo::normalize` 回填内置 RSS。
+    #[serde(default)]
     pub provider_id: String,
     /// provider 专属配置 JSON。
     #[serde(default)]
@@ -1864,10 +1864,6 @@ pub struct RssSourceEntry {
     /// 未处理条目数（侧边栏 badge）。只读派生值。
     #[serde(default)]
     pub unread_count: i32,
-}
-
-fn default_rss_provider_id() -> String {
-    "rss".to_string()
 }
 
 /// 订阅流中的一个条目（Rust → Dart）。

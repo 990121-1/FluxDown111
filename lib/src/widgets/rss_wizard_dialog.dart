@@ -161,6 +161,9 @@ class _RssWizardDialogState extends State<RssWizardDialog> {
       }
     }
     final validated = _result != null && _result!.error.isEmpty;
+    // 插件 provider 没有「验证」步骤，按钮直接是「订阅」；URL 为空时禁用，
+    // 而不是让 _subscribe 静默 return（web 端同场景会报 rss.urlRequired）。
+    final urlEmpty = _urlCtrl.text.trim().isEmpty;
     return ShadDialog(
       title: Text(s.rssAddSource),
       description: Text(
@@ -174,11 +177,9 @@ class _RssWizardDialogState extends State<RssWizardDialog> {
           child: Text(s.cancel),
         ),
         ShadButton(
-          onPressed: _validating
+          onPressed: _validating || urlEmpty
               ? null
-              : _providerId != 'rss'
-              ? _subscribe
-              : validated
+              : _providerId != 'rss' || validated
               ? _subscribe
               : _validate,
           child: Text(
@@ -221,13 +222,6 @@ class _RssWizardDialogState extends State<RssWizardDialog> {
                   });
                 },
               ),
-              if (_providerId != 'rss') ...[
-                const SizedBox(height: 5),
-                Text(
-                  s.rssProviderPluginHint,
-                  style: TextStyle(fontSize: 11, color: c.textMuted, height: 1.4),
-                ),
-              ],
               const SizedBox(height: 14),
               Text(
                 s.rssUrlLabel,
@@ -246,8 +240,9 @@ class _RssWizardDialogState extends State<RssWizardDialog> {
                   if (!_validating && !validated) _validate();
                 },
                 onChanged: (_) {
-                  // 改地址即作废上一次验证结果，避免用旧 feed 标题建新订阅。
-                  if (_result != null) setState(() => _result = null);
+                  // 改地址即作废上一次验证结果，避免用旧 feed 标题建新订阅；
+                  // 同时刷新按钮的空 URL 禁用态。
+                  setState(() => _result = null);
                 },
               ),
               const SizedBox(height: 6),

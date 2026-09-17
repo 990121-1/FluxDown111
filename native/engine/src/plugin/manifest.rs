@@ -291,6 +291,12 @@ impl PluginManifest {
                     s.provider_id
                 )));
             }
+            if s.provider_id == crate::rss::RSS_PROVIDER_ID {
+                return Err(PluginError::ManifestInvalid(format!(
+                    "subscription providerId '{}' 为内置 provider 保留字",
+                    s.provider_id
+                )));
+            }
             if !is_safe_relative_path(&s.entry) {
                 return Err(PluginError::ManifestInvalid(format!(
                     "subscription entry 路径 '{}' 非法",
@@ -640,6 +646,16 @@ mod tests {
         let m = parse_ok(
             r#"{"identity":"a@b","name":"N","version":"1.0.0",
                 "subscriptions":[{"providerId":"Demo.JSON","entry":"subscribe.js"}]}"#,
+        );
+        assert!(m.validate().is_err());
+    }
+
+    /// 内置 `rss` 是保留字：插件声明会被内置 provider 遮蔽而永不调用。
+    #[test]
+    fn rejects_reserved_rss_provider_id() {
+        let m = parse_ok(
+            r#"{"identity":"a@b","name":"N","version":"1.0.0",
+                "subscriptions":[{"providerId":"rss","entry":"subscribe.js"}]}"#,
         );
         assert!(m.validate().is_err());
     }

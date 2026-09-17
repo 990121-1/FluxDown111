@@ -236,12 +236,14 @@ pub struct RssItemInfo {
 }
 
 impl RssItemInfo {
-    /// 实际下载地址：优先 `enclosure_url`，为空时回退 `link`（§2.2）。
+    /// 实际下载地址：带 `resolver_item` 时用条目 `link` 触发二段解析；否则优先
+    /// `enclosure_url`，为空时回退 `link`（§2.2）。
     #[must_use]
     pub fn download_url(&self) -> &str {
         if !self.resolver_item.is_empty() && !self.link.is_empty() {
-            &self.link
-        } else if self.enclosure_url.is_empty() {
+            return &self.link;
+        }
+        if self.enclosure_url.is_empty() {
             &self.link
         } else {
             &self.enclosure_url

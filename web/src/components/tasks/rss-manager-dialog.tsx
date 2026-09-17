@@ -337,7 +337,7 @@ function RssDialogContent({
                 <SelectField
                   value={form.providerId}
                   onChange={(v) => {
-                    patch({ providerId: v, providerConfig: v === 'rss' ? '' : (form.providerConfig || '{}') })
+                    patch({ providerId: v, providerConfig: v === 'rss' ? '' : form.providerConfig })
                     setValidated(null)
                   }}
                   options={providerOptions}

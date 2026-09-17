@@ -21,11 +21,13 @@ pub struct SubscriptionFetchRequest {
     pub url: String,
     /// provider 专属配置，通常是 JSON；引擎不解释其内容。
     pub provider_config: String,
-    /// 订阅级 Cookie。
+    /// 订阅级 Cookie。插件 provider 经 `ctx.cookies` 原样交给脚本。
     pub cookies: String,
-    /// 已解析的 User-Agent。
+    /// 已解析的 User-Agent。插件 provider 只经 `ctx.userAgent` 透传，脚本
+    /// 自行决定是否作为请求头发送。
     pub user_agent: String,
-    /// 已解析的代理配置。
+    /// 已解析的代理配置。**仅内置 `rss` provider 使用**；插件 provider 的
+    /// `flux.fetch` 走 bridge 的全局出口，订阅级代理对其不生效。
     pub proxy: ProxyConfig,
 }
 

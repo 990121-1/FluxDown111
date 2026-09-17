@@ -598,7 +598,13 @@ impl PluginManager {
                     provider_id: provider_id.to_string(),
                     source_id: request.source_id,
                     url: request.url,
-                    provider_config: request.provider_config,
+                    // 空配置归一化为 `{}`：三端建订阅时的空值语义统一在此单点
+                    // 决定，脚本可无条件 `JSON.parse(ctx.providerConfig)`。
+                    provider_config: if request.provider_config.trim().is_empty() {
+                        "{}".to_string()
+                    } else {
+                        request.provider_config
+                    },
                     cookies: request.cookies,
                     user_agent: request.user_agent,
                 },
@@ -1157,6 +1163,10 @@ struct SubscriptionOutputItem {
     pub_date: i64,
 }
 
+/// 订阅输出校验：条目总数 ≤1000；单条非法（guid 空/超长、URL scheme 不在
+/// 白名单、字段超长、长度为负）**跳过并记日志**而不是整批失败——订阅是无人
+/// 值守链路，上游一条脏数据不该让整个源进入退避；但若条目非空且**全部**
+/// 非法，视为插件输出系统性错误，返回 `InvalidOutput`。
 fn parse_subscription_output(raw: &str) -> Result<ParsedFeed, PluginError> {
     let output: SubscriptionOutput = serde_json::from_str(raw)
         .map_err(|e| PluginError::InvalidOutput(format!("订阅返回值非法: {e}")))?;
@@ -1165,32 +1175,76 @@ fn parse_subscription_output(raw: &str) -> Result<ParsedFeed, PluginError> {
             "订阅条目数量超过 1000".to_string(),
         ));
     }
-    let mut items = Vec::with_capacity(output.items.len());
+    let total = output.items.len();
+    let mut items = Vec::with_capacity(total);
+    let mut first_reason: Option<String> = None;
+    let mut rejected = 0usize;
     for item in output.items {
-        if item.guid.is_empty() || item.guid.len() > 2048 {
-            return Err(PluginError::InvalidOutput(
-                "订阅条目 guid 必须非空且不超过 2048 字节".to_string(),
-            ));
+        match validate_subscription_item(item) {
+            Ok(item) => items.push(item),
+            Err(reason) => {
+                rejected += 1;
+                if first_reason.is_none() {
+                    first_reason = Some(reason);
+                }
+            }
         }
-        if item.enclosure_length < 0 {
-            return Err(PluginError::InvalidOutput(
-                "订阅条目 enclosureLength 不可为负数".to_string(),
-            ));
+    }
+    if rejected > 0 {
+        let reason = first_reason.unwrap_or_default();
+        if items.is_empty() {
+            return Err(PluginError::InvalidOutput(format!(
+                "订阅条目全部非法（{rejected} 条），首条原因: {reason}"
+            )));
         }
-        items.push(ParsedItem {
-            guid: item.guid,
-            title: item.title,
-            link: item.link,
-            enclosure_url: item.enclosure_url,
-            resolver_item: item.resolver_item,
-            enclosure_length: item.enclosure_length,
-            pub_date: item.pub_date,
-        });
+        crate::logger::log_error!(
+            "[plugin] subscription output: skipped {} of {} items, first reason: {}",
+            rejected,
+            total,
+            reason
+        );
     }
     Ok(ParsedFeed {
         title: output.title,
         link: output.link,
         items,
+    })
+}
+
+/// 单条订阅条目校验：guid 非空 ≤2048；title ≤1024；resolver_item ≤2048；
+/// `enclosureUrl` / `link` 至少一个非空且都过 [`check_output_url`]（同 resolve
+/// 平面：scheme 白名单 + ≤8KB）；`enclosureLength` 非负。
+fn validate_subscription_item(item: SubscriptionOutputItem) -> Result<ParsedItem, String> {
+    if item.guid.is_empty() || item.guid.len() > 2048 {
+        return Err("guid 必须非空且不超过 2048 字节".to_string());
+    }
+    if item.title.len() > 1024 {
+        return Err(format!("条目 {} 的 title 超过 1024 字节", item.guid));
+    }
+    if item.resolver_item.len() > 2048 {
+        return Err(format!("条目 {} 的 resolverItem 超过 2048 字节", item.guid));
+    }
+    if item.link.is_empty() && item.enclosure_url.is_empty() {
+        return Err(format!("条目 {} 缺少 link / enclosureUrl", item.guid));
+    }
+    for (name, url) in [("link", &item.link), ("enclosureUrl", &item.enclosure_url)] {
+        if !url.is_empty()
+            && let Err(e) = check_output_url(url)
+        {
+            return Err(format!("条目 {} 的 {name} 非法: {e}", item.guid));
+        }
+    }
+    if item.enclosure_length < 0 {
+        return Err(format!("条目 {} 的 enclosureLength 不可为负数", item.guid));
+    }
+    Ok(ParsedItem {
+        guid: item.guid,
+        title: item.title,
+        link: item.link,
+        enclosure_url: item.enclosure_url,
+        resolver_item: item.resolver_item,
+        enclosure_length: item.enclosure_length,
+        pub_date: item.pub_date,
     })
 }
 
@@ -1362,9 +1416,9 @@ fn validate_manifest_item(item: &ManifestItem) -> Result<(), PluginError> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::validate_resolve_output;
+    use super::{parse_subscription_output, validate_resolve_output};
     use crate::plugin::{
-        ManifestItem, ManifestVariant, ResolveManifest, ResolveResult, ResolveVariant,
+        ManifestItem, ManifestVariant, PluginError, ResolveManifest, ResolveResult, ResolveVariant,
     };
 
     fn variant(label: &str, url: &str) -> ResolveVariant {
@@ -1382,6 +1436,33 @@ mod tests {
             path: path.into(),
             ..Default::default()
         }
+    }
+
+    /// 单条非法条目跳过、合法条目保留；URL scheme 白名单与 resolve 平面一致。
+    #[test]
+    fn subscription_output_skips_invalid_items_but_keeps_valid_ones() {
+        let raw = r#"{"title":"T","items":[
+            {"guid":"ok","link":"https://a.test/1","enclosureUrl":"https://a.test/1.torrent"},
+            {"guid":"","link":"https://a.test/2"},
+            {"guid":"bad-scheme","link":"javascript:alert(1)"},
+            {"guid":"no-url"},
+            {"guid":"neg","link":"https://a.test/3","enclosureLength":-1}
+        ]}"#;
+        let feed = parse_subscription_output(raw).expect("partial output is accepted");
+        assert_eq!(feed.items.len(), 1);
+        assert_eq!(feed.items[0].guid, "ok");
+    }
+
+    /// 条目非空但全部非法：视为插件输出系统性错误，整轮失败。
+    #[test]
+    fn subscription_output_fails_when_every_item_is_invalid() {
+        let raw = r#"{"items":[{"guid":"","link":"https://a.test/1"},{"guid":"x"}]}"#;
+        assert!(matches!(
+            parse_subscription_output(raw),
+            Err(PluginError::InvalidOutput(_))
+        ));
+        // 空 feed（无条目）是合法的：新源尚无内容不算失败。
+        assert!(parse_subscription_output(r#"{"items":[]}"#).is_ok());
     }
 
     /// 有 variants 时顶层 url 允许为空（选中变体后覆盖）。
