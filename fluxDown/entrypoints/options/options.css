@@ -127,17 +127,17 @@ body {
 
 .opt-row-note {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 5px;
   margin-top: 8px;
-  color: #3b82f6;
-  white-space: nowrap;
+  color: var(--accent);
 }
 
 .opt-row-note-icon {
   flex: 0 0 16px;
   width: 16px;
   height: 16px;
+  margin-top: 1px;
 }
 
 .opt-row-control {
