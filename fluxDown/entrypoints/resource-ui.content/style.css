@@ -14,6 +14,12 @@
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* Keep extension chrome out of page select-all / copy. Host-page
+   * content is outside this shadow tree and stays selectable.
+   * WXT resets :host with `all: initial !important`, so these
+   * longhands need !important to win. */
+  user-select: none !important;
+  -webkit-user-select: none !important;
 
   /* Dark（默认） */
   --fd-dot-bg: #1e293b;
@@ -97,6 +103,8 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* =========================================================
@@ -248,9 +256,12 @@
   font-size: 13px;
   color: var(--fd-text);
 
-  /* 默认隐藏 */
+  /* Closed: hide immediately so overlay text cannot join a page
+   * selection during the opacity fade. Open-state fade-in is unchanged
+   * (visibility becomes visible as soon as .visible is applied). */
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
@@ -275,6 +286,7 @@
 .fluxdown-panel.visible {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
 }
 
 /* --- 标题栏 --- */
@@ -785,6 +797,7 @@
   color: var(--fd-text);
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
   transform: scale(0.94) translateY(-4px);
   transition: opacity 0.15s ease, transform 0.15s ease;
 }
@@ -792,6 +805,7 @@
 .fluxdown-quality-picker.visible {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
   transform: scale(1) translateY(0);
 }
 
@@ -887,12 +901,14 @@
   background: var(--fd-overlay);
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
   transition: opacity 0.15s ease;
 }
 
 .fluxdown-preview-modal.visible {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
 }
 
 .fluxdown-preview-card {
