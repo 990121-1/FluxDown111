@@ -599,6 +599,9 @@ pub struct PluginDto {
     /// 是否声明平台登录入口。
     #[serde(default)]
     pub auth_supported: bool,
+    /// manifest 声明的订阅 provider ID，供订阅创建界面生成可选来源。
+    #[serde(default)]
+    pub subscription_provider_ids: Vec<String>,
 }
 
 /// 驱动插件平台登录（二维码/账号登录）的请求。
@@ -1182,6 +1185,12 @@ pub struct LinkOkResponse {
 pub struct RssSourceDto {
     #[serde(default)]
     pub source_id: String,
+    /// 来源 provider 的稳定 ID；缺省为内置 RSS provider。
+    #[serde(default = "default_rss_provider_id")]
+    pub provider_id: String,
+    /// provider 专属配置 JSON；缺省为空。
+    #[serde(default)]
+    pub provider_config: String,
     pub url: String,
     /// 空 = 用 feed 标题回填。
     #[serde(default)]
@@ -1251,6 +1260,10 @@ pub struct RssSourceDto {
     /// 只读：未处理条目数（侧边栏 badge）。
     #[serde(default)]
     pub unread_count: i32,
+}
+
+fn default_rss_provider_id() -> String {
+    "rss".to_string()
 }
 
 /// 订阅流中的一个条目（`GET /api/v1/rss/{id}/items`）。

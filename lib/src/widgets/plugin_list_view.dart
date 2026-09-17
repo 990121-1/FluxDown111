@@ -116,7 +116,7 @@ class _PluginListViewState extends State<PluginListView> {
     try {
       final files = await FilePickerService.pickFiles(
         dialogTitle: currentS.pluginInstallZipButton,
-        allowedExtensions: const ['zip'],
+        allowedExtensions: const ['fxplug', 'zip'],
       );
       final file = files == null || files.isEmpty ? null : files.first;
       if (file != null) {

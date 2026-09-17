@@ -108,6 +108,8 @@ pub fn group_info_to_dto(group: GroupInfo) -> GroupDto {
 pub fn rss_source_info_to_dto(source: RssSourceInfo) -> RssSourceDto {
     RssSourceDto {
         source_id: source.source_id,
+        provider_id: source.provider_id,
+        provider_config: source.provider_config,
         url: source.url,
         name: source.name,
         enabled: source.enabled,
@@ -143,6 +145,12 @@ pub fn rss_source_info_to_dto(source: RssSourceInfo) -> RssSourceDto {
 pub fn rss_source_dto_to_engine(source: RssSourceDto) -> RssSourceInfo {
     RssSourceInfo {
         source_id: source.source_id,
+        provider_id: if source.provider_id.trim().is_empty() {
+            fluxdown_engine::rss::model::RSS_PROVIDER_ID.to_string()
+        } else {
+            source.provider_id
+        },
+        provider_config: source.provider_config,
         url: source.url,
         name: source.name,
         enabled: source.enabled,
@@ -366,6 +374,7 @@ pub fn plugin_info_to_dto(
         settings_values: plugin.settings_values.into_iter().collect(),
         permissions: plugin.permissions,
         auth_supported: plugin.auth_supported,
+        subscription_provider_ids: plugin.subscription_provider_ids,
     }
 }
 
