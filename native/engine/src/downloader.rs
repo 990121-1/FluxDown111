@@ -904,7 +904,6 @@ fn build_client_inner(
         user_agent
     };
     let mut builder = Client::builder()
-        .use_rustls_tls()
         .user_agent(ua)
         // TLS defaults to strict verification. Only a task whose confirmation
         // dialog explicitly enabled the insecure option reaches `true` here.

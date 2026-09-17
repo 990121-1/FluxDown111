@@ -338,16 +338,7 @@ impl EngineBridge {
         plugin_retry_tx: mpsc::UnboundedSender<(String, u64)>,
         data_dir: PathBuf,
     ) -> Result<Self, PluginError> {
-        let resolved_proxy = proxy.resolve();
-        log_info!(
-            "[plugin] bridge outbound proxy: mode={}, type={}, endpoint={}:{}",
-            resolved_proxy.mode.as_str(),
-            resolved_proxy.proxy_type.as_str(),
-            resolved_proxy.host,
-            resolved_proxy.port
-        );
         let mut builder = reqwest::Client::builder()
-            .use_rustls_tls()
             .timeout(REQUEST_TIMEOUT)
             .dns_resolver(Arc::new(GuardResolver))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
