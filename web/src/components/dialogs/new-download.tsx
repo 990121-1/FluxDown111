@@ -24,7 +24,7 @@ import { queueDisplayName } from '../../lib/format'
 import { newDownloadOpenStore, openManifestSelect } from '../../lib/dialogs'
 import { useI18n } from '../../lib/i18n'
 import { manifestIsPreviewableUrl } from '../../lib/manifest-selection'
-import { parseSiteAuthStore, siteKeyFromUrl } from '../../lib/site-auth'
+import { siteKeyFromUrl } from '../../lib/site-auth'
 import { UA_PRESETS } from '../../lib/ua-presets'
 import { useStore } from '../../lib/ws'
 import { FsPicker } from './fs-picker'
@@ -249,8 +249,13 @@ export function NewDownloadDialog() {
   // 站点凭据自动回填：单条 http/https URL 且认证区可见时，按站点键查已保存凭据回填
   // 用户名/密码；仅当字段为空或仍是上次自动值时才回填/更新，切到无凭据站点则清空。
   // 手动改过（authDirty）后完全放手。回填不拨动「为此网站保存」开关。
-  const siteAuthStore = useMemo(() => parseSiteAuthStore(config?.site_auth_credentials), [config])
   const singleUrl = urlLines.length === 1 ? urlLines[0] : ''
+  const siteAuthKey = singleUrl ? siteKeyFromUrl(singleUrl) : null
+  const { data: siteAuthCredential } = useQuery({
+    queryKey: ['site-auth-detail', siteAuthKey],
+    queryFn: () => api.getSiteAuth(siteAuthKey!),
+    enabled: open && form.advOpen && Boolean(siteAuthKey),
+  })
   useEffect(() => {
     if (!open) return
     setForm((f) => {
@@ -259,8 +264,7 @@ export function NewDownloadDialog() {
       const userIsAuto = f.httpUser === '' || (auto != null && f.httpUser === auto.user)
       const passIsAuto = f.httpPassword === '' || (auto != null && f.httpPassword === auto.pass)
       if (!userIsAuto || !passIsAuto) return f
-      const key = singleUrl ? siteKeyFromUrl(singleUrl) : null
-      const cred = key ? siteAuthStore[key] : undefined
+      const cred = siteAuthCredential
       if (cred) {
         authAutofill.current = { user: cred.user, pass: cred.pass }
         if (f.httpUser === cred.user && f.httpPassword === cred.pass) return f
@@ -272,7 +276,7 @@ export function NewDownloadDialog() {
       }
       return f
     })
-  }, [open, singleUrl, siteAuthStore, form.advOpen])
+  }, [open, singleUrl, siteAuthCredential, form.advOpen])
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }))

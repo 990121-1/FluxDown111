@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::db::{Db, DbError};
 
 /// 插件认证凭据配置键。
+///
+/// 仅作为旧版本整表存储的迁移兼容键；新写入按认证档案拆成独立 config 行。
 pub const AUTH_PROFILES_CONFIG_KEY: &str = "plugin_auth_profiles";
 
 /// 一份可复用的插件认证凭据。
@@ -129,35 +131,155 @@ pub fn normalize_site(input: &str) -> Option<String> {
 
 /// 从配置中读取认证档案。
 pub async fn load_all(db: &Db) -> Result<BTreeMap<String, AuthProfile>, DbError> {
-    let json = db
-        .get_config(AUTH_PROFILES_CONFIG_KEY)
-        .await?
-        .unwrap_or_default();
-    if json.trim().is_empty() {
-        return Ok(BTreeMap::new());
+    let mut store = BTreeMap::new();
+    for (key, json) in db.list_config_with_prefix("plugin.").await? {
+        if !is_profile_config_key(&key) {
+            continue;
+        }
+        let profile: AuthProfile = serde_json::from_str(&json)
+            .map_err(|error| DbError::InvalidConfig(format!("认证档案 {key} 解析失败: {error}")))?;
+        if !profile.auth_ref.is_empty() {
+            store.insert(profile.auth_ref.clone(), profile);
+        }
     }
-    Ok(serde_json::from_str(&json).unwrap_or_default())
+    if let Some(json) = db.get_config(AUTH_PROFILES_CONFIG_KEY).await?
+        && !json.trim().is_empty()
+    {
+        let legacy: BTreeMap<String, AuthProfile> = serde_json::from_str(&json)
+            .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表解析失败: {error}")))?;
+        for (auth_ref, profile) in legacy {
+            store.entry(auth_ref).or_insert(profile);
+        }
+    }
+    Ok(store)
 }
 
 /// 读取单份认证档案。
 pub async fn load(db: &Db, auth_ref: &str) -> Result<Option<AuthProfile>, DbError> {
-    Ok(load_all(db).await?.remove(auth_ref))
+    if let Some(key) = profile_key_for_ref(auth_ref)
+        && let Some(json) = db.get_config(&key).await?
+    {
+        let profile = serde_json::from_str(&json)
+            .map_err(|error| DbError::InvalidConfig(format!("认证档案 {key} 解析失败: {error}")))?;
+        return Ok(Some(profile));
+    }
+    let Some(json) = db.get_config(AUTH_PROFILES_CONFIG_KEY).await? else {
+        return Ok(None);
+    };
+    if json.trim().is_empty() {
+        return Ok(None);
+    }
+    let legacy: BTreeMap<String, AuthProfile> = serde_json::from_str(&json)
+        .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表解析失败: {error}")))?;
+    Ok(legacy.get(auth_ref).cloned())
 }
 
 /// 写入或替换认证档案。
 pub async fn save(db: &Db, profile: &AuthProfile) -> Result<(), DbError> {
-    let mut store = load_all(db).await?;
-    store.insert(profile.auth_ref.clone(), profile.clone());
-    let json = serde_json::to_string(&store).unwrap_or_else(|_| "{}".to_string());
-    db.set_config(AUTH_PROFILES_CONFIG_KEY, &json).await
+    migrate_legacy(db).await?;
+    let key = profile_config_key(profile);
+    let json = serde_json::to_string(profile)
+        .map_err(|error| DbError::InvalidConfig(format!("认证档案序列化失败: {error}")))?;
+    db.set_config(&key, &json).await
 }
 
 /// 删除认证档案。
 pub async fn remove(db: &Db, auth_ref: &str) -> Result<(), DbError> {
-    let mut store = load_all(db).await?;
-    store.remove(auth_ref);
-    let json = serde_json::to_string(&store).unwrap_or_else(|_| "{}".to_string());
-    db.set_config(AUTH_PROFILES_CONFIG_KEY, &json).await
+    migrate_legacy(db).await?;
+    if let Some(key) = profile_key_for_ref(auth_ref) {
+        db.delete_config(&key).await?;
+    }
+    Ok(())
+}
+
+/// 卸载插件时删除该插件的全部认证档案，包括旧版整表中的条目。
+pub async fn remove_plugin(db: &Db, plugin_id: &str) -> Result<(), DbError> {
+    let prefix = format!("plugin.{plugin_id}.auth.");
+    for (key, _) in db.list_config_with_prefix(&prefix).await? {
+        db.delete_config(&key).await?;
+    }
+    let Some(json) = db.get_config(AUTH_PROFILES_CONFIG_KEY).await? else {
+        return Ok(());
+    };
+    if json.trim().is_empty() {
+        return Ok(());
+    }
+    let mut legacy: BTreeMap<String, AuthProfile> = serde_json::from_str(&json)
+        .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表解析失败: {error}")))?;
+    let auth_prefix = format!("{plugin_id}::");
+    legacy.retain(|auth_ref, profile| {
+        !auth_ref.starts_with(&auth_prefix) && profile.plugin_id != plugin_id
+    });
+    if legacy.is_empty() {
+        db.delete_config(AUTH_PROFILES_CONFIG_KEY).await
+    } else {
+        let remaining = serde_json::to_string(&legacy)
+            .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表序列化失败: {error}")))?;
+        db.set_config(AUTH_PROFILES_CONFIG_KEY, &remaining).await
+    }
+}
+
+fn profile_config_key(profile: &AuthProfile) -> String {
+    format!("plugin.{}.auth.{}", profile.plugin_id, profile.site)
+}
+
+fn profile_key_for_ref(auth_ref: &str) -> Option<String> {
+    let (plugin_id, site) = auth_ref.split_once("::")?;
+    if plugin_id.is_empty() || site.is_empty() {
+        return None;
+    }
+    Some(format!("plugin.{plugin_id}.auth.{site}"))
+}
+
+async fn migrate_legacy(db: &Db) -> Result<(), DbError> {
+    let Some(json) = db.get_config(AUTH_PROFILES_CONFIG_KEY).await? else {
+        return Ok(());
+    };
+    if json.trim().is_empty() {
+        db.delete_config(AUTH_PROFILES_CONFIG_KEY).await?;
+        return Ok(());
+    }
+    let legacy: BTreeMap<String, AuthProfile> = serde_json::from_str(&json)
+        .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表解析失败: {error}")))?;
+    let mut values = BTreeMap::new();
+    for (auth_ref, mut profile) in legacy {
+        let Some((plugin_id, site)) = auth_ref.split_once("::") else {
+            return Err(DbError::InvalidConfig(format!(
+                "认证档案 authRef 非法: {auth_ref}"
+            )));
+        };
+        let plugin_id = plugin_id.to_string();
+        let site = site.to_string();
+        let Some(key) = profile_key_for_ref(&auth_ref) else {
+            return Err(DbError::InvalidConfig(format!(
+                "认证档案 authRef 非法: {auth_ref}"
+            )));
+        };
+        // 旧表的 map key 才是可查找的权威引用；修复旧版本可能留下的
+        // 空/不一致 profile.authRef 与 pluginId/site，避免迁移后读不到。
+        profile.auth_ref = auth_ref;
+        if profile.plugin_id.is_empty() {
+            profile.plugin_id = plugin_id;
+        }
+        if profile.site.is_empty() {
+            profile.site = site;
+        }
+        let value = serde_json::to_string(&profile)
+            .map_err(|error| DbError::InvalidConfig(format!("认证档案序列化失败: {error}")))?;
+        values.insert(key, value);
+    }
+    db.set_config_batch_atomic(&values).await?;
+    db.delete_config(AUTH_PROFILES_CONFIG_KEY).await
+}
+
+fn is_profile_config_key(key: &str) -> bool {
+    let Some(rest) = key.strip_prefix("plugin.") else {
+        return false;
+    };
+    let Some((identity, site)) = rest.split_once(".auth.") else {
+        return false;
+    };
+    !identity.is_empty() && !identity.contains('.') && identity.contains('@') && !site.is_empty()
 }
 
 /// 返回当前 Unix 秒。

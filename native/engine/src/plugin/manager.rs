@@ -501,7 +501,7 @@ impl PluginManager {
     }
 
     /// 执行插件平台登录入口。登录状态由插件通过 `flux.auth.save` 写入宿主，
-    /// 本方法只负责驱动 begin/poll/cancel/logout 并把二维码挑战返回给 UI。
+    /// 本方法只负责驱动 begin/poll/cancel/logout/status 并把挑战返回给 UI。
     pub async fn authenticate(
         &self,
         identity: &str,
@@ -564,8 +564,9 @@ impl PluginManager {
             version,
             app_version: self.app_version.clone(),
         };
+        let action = req.action.clone();
         let requested_auth_ref = req.auth_ref.clone();
-        let mut result = self
+        let invocation = self
             .runtime
             .invoke_auth(
                 &script,
@@ -578,7 +579,13 @@ impl PluginManager {
                     ..Default::default()
                 },
             )
-            .await?;
+            .await;
+        if action == "logout" && !requested_auth_ref.is_empty() {
+            self.bridge
+                .auth_remove(identity, &requested_auth_ref)
+                .await?;
+        }
+        let mut result = invocation?;
         if result.status == "success" && result.auth_ref.is_none() && !requested_auth_ref.is_empty()
         {
             result.auth_ref = Some(requested_auth_ref);
@@ -718,16 +725,14 @@ impl PluginManager {
 
     /// 从 zip 字节安装。
     pub async fn install_from_zip(&self, bytes: Vec<u8>) -> Result<String, PluginError> {
-        let identity = super::install::install_from_zip(&self.root, &bytes)?;
-        self.finish_install(&identity).await?;
-        Ok(identity)
+        let outcome = super::install::install_from_zip_with_backup(&self.root, &bytes)?;
+        self.finish_install_outcome(outcome).await
     }
 
     /// 从目录安装（不剥壳，path 须直接含 manifest.json）。
     pub async fn install_from_dir(&self, path: &Path) -> Result<String, PluginError> {
-        let identity = super::install::install_from_dir(&self.root, path)?;
-        self.finish_install(&identity).await?;
-        Ok(identity)
+        let outcome = super::install::install_from_dir_with_backup(&self.root, path)?;
+        self.finish_install_outcome(outcome).await
     }
 
     /// dev 安装（写 plugin.dev.<identity>=abs(path)，不拷贝）。
@@ -744,7 +749,32 @@ impl PluginManager {
             .set_config(&format!("plugin.dev.{identity}"), &abs.to_string_lossy())
             .await
             .map_err(|e| PluginError::Runtime(e.to_string()))?;
-        self.finish_install(&identity).await?;
+        if let Err(error) = self.finish_install(&identity).await {
+            let _ = self.purge(&identity).await;
+            return Err(error);
+        }
+        Ok(identity)
+    }
+
+    async fn finish_install_outcome(
+        &self,
+        outcome: super::install::InstallOutcome,
+    ) -> Result<String, PluginError> {
+        let identity = outcome.identity().to_string();
+        if let Err(error) = self.finish_install(&identity).await {
+            if outcome.has_backup() {
+                let _ = super::install::rollback_install(&outcome);
+                self.load_all().await;
+            } else {
+                let _ = self.purge(&identity).await;
+            }
+            return Err(error);
+        }
+        if let Err(error) = super::install::commit_install(&outcome) {
+            let _ = super::install::rollback_install(&outcome);
+            self.load_all().await;
+            return Err(error);
+        }
         Ok(identity)
     }
 
@@ -769,8 +799,8 @@ impl PluginManager {
             .is_some();
 
         // compile / pattern 校验各 entry：先临时重载以拿到源码，再校验。
-        // 任一校验失败 → **回滚**（uninstall：删目录 + 清 config + 重载），
-        // 避免残留一个「已装但校验失败」且默认启用的插件（reviewer finding 5）。
+        // 任一校验失败由调用方回滚：升级恢复旧目录，新安装清理新目录，
+        // 避免残留一个「已装但校验失败」且默认启用的插件。
         self.load_all().await;
         let validation: Result<(), PluginError> = {
             let snapshot = self.plugins.read().await.clone();
@@ -782,6 +812,11 @@ impl PluginManager {
                     }
                     if r.is_ok()
                         && let Some(src) = p.hooks_source().await
+                    {
+                        r = self.runtime.check_compile(&src);
+                    }
+                    if r.is_ok()
+                        && let Some(src) = p.auth_source().await
                     {
                         r = self.runtime.check_compile(&src);
                     }
@@ -805,12 +840,7 @@ impl PluginManager {
                 )),
             }
         };
-        if let Err(e) = validation {
-            // 回滚用 purge（不清任务绑定）：失败的升级不该改变存量任务语义——
-            // 绑定保留，resume 走 fail-closed 报错，用户重装插件即恢复。
-            let _ = self.purge(identity).await;
-            return Err(e);
-        }
+        validation?;
 
         // enabled 写入规则：
         // - 新装（无 enabled 键）或熔断 → enabled=1, reason=None（升级即解熔断）
@@ -853,6 +883,9 @@ impl PluginManager {
             // plugin.dev.<id> 是精确键（无尾点），单独删。
             let _ = self.db.delete_config(&prefix).await;
         }
+        crate::auth::remove_plugin(&self.db, identity)
+            .await
+            .map_err(|e| PluginError::Runtime(format!("清理认证凭据失败: {e:#}")))?;
         self.load_all().await;
         Ok(())
     }

@@ -662,6 +662,15 @@ export interface PluginAuthResponse {
   authRef?: string | null
 }
 
+export interface SiteAuthEntry {
+  site: string
+  user: string
+}
+
+export interface SiteAuthCredential extends SiteAuthEntry {
+  pass: string
+}
+
 export interface InstalledPlugin {
   identity: string
   /** 插件声明权限所需但尚未安装的基础组件（"ffmpeg"/"ytdlp"），提醒式。 */

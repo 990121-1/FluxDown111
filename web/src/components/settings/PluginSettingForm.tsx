@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Check, ClipboardCopy, QrCode, Settings2, X } from 'lucide-react'
-import QRCode from 'qrcode'
+import QRCode from 'qrcode/lib/browser.js'
 import { copyText } from '../../lib/copy'
 import type { I18nKey } from '../../lib/i18n'
 import { useI18n } from '../../lib/i18n'
@@ -159,13 +159,20 @@ function PluginAuthSection({ plugin }: { plugin: PluginDto }) {
   const [response, setResponse] = useState<PluginAuthResponse | null>(null)
   const { mutateAsync, isPending, reset } = authMut
 
+  const refreshStatus = useCallback(async (nextSite: string) => {
+    const result = await mutateAsync({
+      identity: plugin.identity,
+      request: { action: 'status', site: nextSite },
+    })
+    setResponse(result)
+    setSessionId(result.status === 'pending' ? result.sessionId : '')
+    setAuthRef(result.status === 'success' ? result.authRef || '' : '')
+  }, [mutateAsync, plugin.identity])
+
   // 对话框重新打开或页面刷新后，从插件/FD 认证存储恢复登录状态或未完成的二维码会话。
   useEffect(() => {
     let active = true
-    void mutateAsync({
-      identity: plugin.identity,
-      request: { action: 'status', site: '' },
-    }).then((result) => {
+    void refreshStatus('').then((result) => {
       if (!active) return
       setResponse(result)
       setSessionId(result.status === 'pending' ? result.sessionId : '')
@@ -177,7 +184,7 @@ function PluginAuthSection({ plugin }: { plugin: PluginDto }) {
     return () => {
       active = false
     }
-  }, [mutateAsync, plugin.identity, reset])
+  }, [refreshStatus, reset])
 
   const submit = useCallback(async (nextInput = input) => {
     const action = sessionId ? 'poll' : 'begin'
@@ -224,7 +231,9 @@ function PluginAuthSection({ plugin }: { plugin: PluginDto }) {
   }, [authRef, mutateAsync, plugin.identity])
 
   const challenge = response?.challenge ?? ''
-  const challengeIsImage = challenge.startsWith('data:image/') || response?.challengeType?.startsWith('image/')
+  // 只有插件返回的 data URL 才能直接进入 img；challengeType 只是描述，不能
+  // 把任意外链升级成 SPA 主动加载的资源。
+  const challengeIsImage = challenge.toLowerCase().startsWith('data:image/')
   const isLoggedIn = response?.status === 'success' && Boolean(authRef)
   // pending 是正常的等待状态，即使之前的请求曾失败，也不能把本次提示染成错误红色。
   const messageClass = response?.status === 'error' || (!response && authMut.isError)
@@ -237,18 +246,18 @@ function PluginAuthSection({ plugin }: { plugin: PluginDto }) {
     <section className="mt-4 rounded-lg border border-line bg-surface2 p-4">
       <div className="mb-2 flex items-center gap-2">
         <QrCode size={15} className="text-accent" />
-        <b className="text-[13px]">{t('plugins.authButton')}</b>
+        <b className="text-[13px]">{response?.challengeType?.toLowerCase() === 'qrcode' ? t('plugins.authQr') : t('plugins.authTitle', { name: plugin.name })}</b>
       </div>
       <p className="mb-3 text-[12px] leading-relaxed text-text2">{t('plugins.authDescription')}</p>
       <div className="flex flex-col gap-2">
-        <input className="input" value={site} onChange={(event) => setSite(event.target.value)} placeholder={t('plugins.authSitePlaceholder')} disabled={isPending} />
+        <input className="input" value={site} onChange={(event) => setSite(event.target.value)} onBlur={() => { if (site.trim()) void refreshStatus(site.trim()) }} placeholder={t('plugins.authSitePlaceholder')} disabled={isPending} />
         <input className="input" value={input} onChange={(event) => setInput(event.target.value)} placeholder={t('plugins.authInputPlaceholder')} disabled={isPending} />
         {challenge && (
           <div className="rounded-lg bg-surface p-3 text-[12px] text-text2">
             {challengeIsImage ? (
               <img src={challenge} alt={t('plugins.authChallenge')} className="mx-auto max-h-56 max-w-56" />
             ) : response?.challengeType?.toLowerCase() === 'qrcode' ? (
-              <QrChallenge value={challenge} alt={t('plugins.authChallenge')} />
+              <QrChallenge value={challenge} alt={t('plugins.authChallenge')} fallbackLabel={t('plugins.authQrGenerating')} />
             ) : (
               <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{challenge}</pre>
             )}
@@ -259,6 +268,7 @@ function PluginAuthSection({ plugin }: { plugin: PluginDto }) {
             {displayMessage}
           </p>
         )}
+        {response?.status === 'pending' && !displayMessage && <p className="text-[12px] text-text2">{t('plugins.authPending')}</p>}
         <div className="flex justify-end gap-2">
           {sessionId && <button type="button" className="btn ghost sm" onClick={() => void cancel()} disabled={isPending}>{t('common.cancel')}</button>}
           {isLoggedIn && <button type="button" className="btn ghost sm" onClick={() => void logout()} disabled={isPending}>{t('plugins.authLogout')}</button>}
@@ -273,7 +283,16 @@ function PluginAuthSection({ plugin }: { plugin: PluginDto }) {
   )
 }
 
-function QrChallenge({ value, alt }: { value: string; alt: string }) {
+function isSafeExternalUrl(value: string): boolean {
+  try {
+    const url = new URL(value, window.location.origin)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function QrChallenge({ value, alt, fallbackLabel }: { value: string; alt: string; fallbackLabel: string }) {
   const [src, setSrc] = useState('')
   const [error, setError] = useState(false)
 
@@ -296,8 +315,14 @@ function QrChallenge({ value, alt }: { value: string; alt: string }) {
   }, [value])
 
   if (src) return <img src={src} alt={alt} className="mx-auto h-60 w-60 rounded bg-white p-2" />
-  if (error) return <a className="break-all text-accent underline" href={value} target="_blank" rel="noreferrer">{value}</a>
-  return <p className="text-center text-[12px] text-text3">生成二维码…</p>
+  if (error) {
+    return isSafeExternalUrl(value) ? (
+      <a className="break-all text-accent underline" href={value} target="_blank" rel="noreferrer">{value}</a>
+    ) : (
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all">{value}</pre>
+    )
+  }
+  return <p className="text-center text-[12px] text-text3">{fallbackLabel}</p>
 }
 
 function SettingFieldRow({

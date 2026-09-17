@@ -391,7 +391,12 @@ async fn get_config(State(state): State<ServerState>) -> Result<Response, ApiErr
         .get_all_config()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(axum::Json(map).into_response())
+    Ok(axum::Json(
+        map.into_iter()
+            .filter(|(key, _)| !is_sensitive_config_key(key))
+            .collect::<HashMap<_, _>>(),
+    )
+    .into_response())
 }
 
 /// 批量写入配置键值并 live-apply 到引擎。
@@ -421,6 +426,7 @@ async fn put_config(
         validate_access_key(&trimmed).map_err(|msg| ApiError::BadRequest(msg.to_string()))?;
         *next = trimmed;
     }
+    entries.retain(|key, _| !is_sensitive_config_key(key));
     let keys: Vec<String> = entries.keys().cloned().collect();
     for (key, value) in &entries {
         state
@@ -449,6 +455,19 @@ async fn put_config(
         });
     }
     Ok(axum::Json(serde_json::json!({ "success": true, "message": "applied" })).into_response())
+}
+
+fn is_sensitive_config_key(key: &str) -> bool {
+    if matches!(key, "plugin_auth_profiles" | "site_auth_credentials") {
+        return true;
+    }
+    let Some(rest) = key.strip_prefix("plugin.") else {
+        return false;
+    };
+    let Some((identity, site)) = rest.split_once(".auth.") else {
+        return false;
+    };
+    !identity.is_empty() && identity.contains('@') && !site.is_empty()
 }
 
 /// 立即刷新 BT Tracker 订阅：同步拉取全部订阅源、去重、写回缓存并失效当前

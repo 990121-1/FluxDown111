@@ -597,6 +597,7 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
   int _lastSeq = -1;
   String _sessionId = '';
   String _authRef = '';
+  String _site = '';
   String _status = '';
   String _challenge = '';
   String _challengeType = '';
@@ -606,6 +607,7 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
   bool _initialAuthCheck = true;
   bool _autoBeginAttempted = false;
   Timer? _pollTimer;
+  Timer? _siteStatusTimer;
 
   @override
   void initState() {
@@ -619,6 +621,7 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
   void dispose() {
     widget.provider.removeListener(_onProviderChanged);
     _pollTimer?.cancel();
+    _siteStatusTimer?.cancel();
     super.dispose();
   }
 
@@ -664,10 +667,18 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
 
   void _refreshSavedAuth() {
     if (!mounted) return;
+    if (!_busy) setState(() => _busy = true);
     widget.provider.authenticate(
       identity: widget.plugin.identity,
       action: 'status',
+      site: _site,
     );
+  }
+
+  void _onSiteChanged(String value) {
+    _site = value;
+    _siteStatusTimer?.cancel();
+    _siteStatusTimer = Timer(const Duration(milliseconds: 350), _refreshSavedAuth);
   }
 
   void _startPolling() {
@@ -684,6 +695,7 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
     widget.provider.authenticate(
       identity: widget.plugin.identity,
       action: _sessionId.isEmpty ? 'begin' : 'poll',
+      site: _site,
       authRef: _authRef,
       sessionId: _sessionId,
     );
@@ -696,6 +708,7 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
     widget.provider.authenticate(
       identity: widget.plugin.identity,
       action: 'logout',
+      site: _site,
       authRef: _authRef,
     );
   }
@@ -705,6 +718,7 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
       widget.provider.authenticate(
         identity: widget.plugin.identity,
         action: 'cancel',
+        site: _site,
         authRef: _authRef,
         sessionId: _sessionId,
       );
@@ -746,12 +760,22 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
     final s = currentS;
     final c = AppColors.of(context);
     return ShadDialog(
-      title: Text(s.pluginAuthDialogTitle(widget.plugin.name)),
+      title: Text(
+        _challengeType.toLowerCase() == 'qrcode'
+            ? s.pluginAuthQr
+            : s.pluginAuthDialogTitle(widget.plugin.name),
+      ),
       description: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(s.pluginAuthDescription),
+            const SizedBox(height: 8),
+            ShadInput(
+              placeholder: Text(s.pluginAuthSitePlaceholder),
+              enabled: !_busy,
+              onChanged: _onSiteChanged,
+            ),
             if (_busy && _challenge.isEmpty) ...[
               const SizedBox(height: 10),
               Text(
@@ -787,6 +811,13 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
         ),
       ),
       actions: [
+        if (_authRef.isEmpty && _status != 'pending')
+          ShadButton(
+            onPressed: _busy ? null : _submit,
+            child: Text(
+              _sessionId.isEmpty ? s.pluginAuthBegin : s.pluginAuthPoll,
+            ),
+          ),
         if (_sessionId.isNotEmpty && _status == 'pending')
           ShadButton.outline(
             onPressed: _busy ? null : _cancel,

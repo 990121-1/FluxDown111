@@ -2176,6 +2176,223 @@
         ]
       }
     },
+    "/api/v1/site-auth": {
+      "get": {
+        "tags": [
+          "management"
+        ],
+        "summary": "列出已保存的站点凭据；只返回站点和用户名，不返回密码。",
+        "operationId": "api_list_site_auth",
+        "responses": {
+          "200": {
+            "description": "脱敏后的站点凭据列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SiteAuthEntryDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "management"
+        ],
+        "summary": "保存单个站点 HTTP Basic 凭据。",
+        "operationId": "api_save_site_auth",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SiteAuthSaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "已保存",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteAuthEntryDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "载荷非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/site-auth/{site}": {
+      "get": {
+        "tags": [
+          "management"
+        ],
+        "summary": "读取单个站点凭据详情。只允许按站点定向读取，不进入通用配置快照。",
+        "operationId": "api_get_site_auth",
+        "parameters": [
+          {
+            "name": "site",
+            "in": "path",
+            "description": "host 或 host:port",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "站点凭据详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteAuthCredentialDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "站点凭据不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "management"
+        ],
+        "summary": "删除单个站点凭据。",
+        "operationId": "api_delete_site_auth",
+        "parameters": [
+          {
+            "name": "site",
+            "in": "path",
+            "description": "host 或 host:port",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已删除",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "站点凭据不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultMessage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "tokenHeader": []
+          }
+        ]
+      }
+    },
     "/api/v1/tasks": {
       "get": {
         "tags": [
@@ -3818,7 +4035,7 @@
         "properties": {
           "action": {
             "type": "string",
-            "description": "`begin` / `poll` / `cancel`。"
+            "description": "`begin` / `poll` / `cancel` / `logout` / `status`。"
           },
           "authRef": {
             "type": "string"
@@ -4589,6 +4806,63 @@
             "type": "string"
           },
           "value": {
+            "type": "string"
+          }
+        }
+      },
+      "SiteAuthCredentialDto": {
+        "type": "object",
+        "description": "单站点 HTTP Basic 凭据详情；仅由受保护的定向查询返回。",
+        "required": [
+          "site",
+          "user",
+          "pass"
+        ],
+        "properties": {
+          "pass": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "SiteAuthEntryDto": {
+        "type": "object",
+        "description": "已保存的站点 HTTP Basic 凭据（`daemon.siteAuth.list`）；不携带密码。",
+        "required": [
+          "site",
+          "user"
+        ],
+        "properties": {
+          "site": {
+            "type": "string",
+            "description": "`host` 或 `host:port`。"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "SiteAuthSaveRequest": {
+        "type": "object",
+        "description": "保存单站点 HTTP Basic 凭据的请求。",
+        "required": [
+          "site",
+          "user",
+          "pass"
+        ],
+        "properties": {
+          "pass": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          },
+          "user": {
             "type": "string"
           }
         }

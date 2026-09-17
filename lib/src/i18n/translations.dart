@@ -1940,6 +1940,9 @@ class S {
   String get pluginAuthQr => _r('pluginAuthQr');
   String get pluginAuthPoll => _r('pluginAuthPoll');
   String get pluginAuthPending => _r('pluginAuthPending');
+  String pluginAuthFailed(String message) =>
+      _r('pluginAuthFailed', {'message': message});
+  String get pluginAuthInvalidResponse => _r('pluginAuthInvalidResponse');
   String get pluginAuthSuccess => _r('pluginAuthSuccess');
   String get pluginAuthLogout => _r('pluginAuthLogout');
   String get pluginSettingsSaveButton => _r('pluginSettingsSaveButton');

@@ -29,7 +29,8 @@ use fluxdown_protocol::daemon::{
     LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo,
     LinkTaskRequest, MarketEntryDto, PluginAuthRequest, PluginAuthResponse, PluginDto, QueueDto,
     ResolvePreviewRequest, ResolvePreviewResponse, RssItemActionRequest, RssItemDto, RssSourceDto,
-    RssValidateRequest, RssValidateResponse, TaskDto,
+    RssValidateRequest, RssValidateResponse, SiteAuthCredentialDto, SiteAuthEntryDto,
+    SiteAuthSaveRequest, TaskDto,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -325,6 +326,12 @@ impl ApiHost for ServerApiHost {
         self.db
             .get_all_config()
             .await
+            .map(|config| {
+                config
+                    .into_iter()
+                    .filter(|(key, _)| !is_sensitive_config_key(key))
+                    .collect()
+            })
             .map_err(|e| ApiError::Internal(e.to_string()))
     }
 
@@ -341,8 +348,12 @@ impl ApiHost for ServerApiHost {
     /// （复用既有 `ActorCmd::ApplyConfig`，与 `/api/v1/config` REST 端点
     /// 走同一条路径，行为完全一致）。
     async fn apply_config(&self, changes: HashMap<String, String>) -> Result<(), ApiError> {
-        let keys: Vec<String> = changes.keys().cloned().collect();
-        for (key, value) in &changes {
+        let filtered: HashMap<_, _> = changes
+            .into_iter()
+            .filter(|(key, _)| !is_sensitive_config_key(key))
+            .collect();
+        let keys: Vec<String> = filtered.keys().cloned().collect();
+        for (key, value) in &filtered {
             self.db
                 .set_config(key, value)
                 .await
@@ -350,6 +361,94 @@ impl ApiHost for ServerApiHost {
         }
         self.send_cmd(|ack| ActorCmd::ApplyConfig { keys, ack })
             .await
+    }
+
+    async fn list_site_auth(&self) -> Result<Vec<SiteAuthEntryDto>, ApiError> {
+        let json = self
+            .db
+            .get_config(fluxdown_engine::site_auth::SITE_AUTH_CONFIG_KEY)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .unwrap_or_default();
+        Ok(fluxdown_engine::site_auth::parse_store(&json)
+            .into_iter()
+            .map(|(site, credential)| SiteAuthEntryDto {
+                site,
+                user: credential.user,
+            })
+            .collect())
+    }
+
+    async fn get_site_auth(&self, site: &str) -> Result<Option<SiteAuthCredentialDto>, ApiError> {
+        let site = normalize_site(site)?;
+        let json = self
+            .db
+            .get_config(fluxdown_engine::site_auth::SITE_AUTH_CONFIG_KEY)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .unwrap_or_default();
+        Ok(fluxdown_engine::site_auth::parse_store(&json)
+            .get(&site)
+            .cloned()
+            .map(|credential| SiteAuthCredentialDto {
+                site,
+                user: credential.user,
+                pass: credential.pass,
+            }))
+    }
+
+    async fn save_site_auth(
+        &self,
+        request: SiteAuthSaveRequest,
+    ) -> Result<SiteAuthEntryDto, ApiError> {
+        let site = normalize_site(&request.site)?;
+        if request.user.trim().is_empty() {
+            return Err(ApiError::BadRequest("user is required".to_string()));
+        }
+        let json = self
+            .db
+            .get_config(fluxdown_engine::site_auth::SITE_AUTH_CONFIG_KEY)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .unwrap_or_default();
+        let mut store = fluxdown_engine::site_auth::parse_store(&json);
+        let user = request.user.trim().to_string();
+        store.insert(
+            site.clone(),
+            fluxdown_engine::site_auth::SiteCredential {
+                user: user.clone(),
+                pass: request.pass,
+            },
+        );
+        self.db
+            .set_config(
+                fluxdown_engine::site_auth::SITE_AUTH_CONFIG_KEY,
+                &fluxdown_engine::site_auth::serialize_store(&store),
+            )
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        Ok(SiteAuthEntryDto { site, user })
+    }
+
+    async fn delete_site_auth(&self, site: &str) -> Result<(), ApiError> {
+        let site = normalize_site(site)?;
+        let json = self
+            .db
+            .get_config(fluxdown_engine::site_auth::SITE_AUTH_CONFIG_KEY)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .unwrap_or_default();
+        let mut store = fluxdown_engine::site_auth::parse_store(&json);
+        if store.remove(&site).is_none() {
+            return Err(ApiError::NotFound);
+        }
+        self.db
+            .set_config(
+                fluxdown_engine::site_auth::SITE_AUTH_CONFIG_KEY,
+                &fluxdown_engine::site_auth::serialize_store(&store),
+            )
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))
     }
 
     /// aria2 `tellStatus`/`tellActive` 的 downloadSpeed 字段来源：读取
@@ -965,6 +1064,26 @@ impl ApiHost for ServerApiHost {
             .await
             .map_err(map_link_err)
     }
+}
+
+fn is_sensitive_config_key(key: &str) -> bool {
+    if matches!(key, "plugin_auth_profiles" | "site_auth_credentials") {
+        return true;
+    }
+    let Some(rest) = key.strip_prefix("plugin.") else {
+        return false;
+    };
+    let Some((identity, site)) = rest.split_once(".auth.") else {
+        return false;
+    };
+    !identity.is_empty() && identity.contains('@') && !site.is_empty()
+}
+
+fn normalize_site(input: &str) -> Result<String, ApiError> {
+    let input = input.trim();
+    fluxdown_engine::site_auth::site_key(input)
+        .or_else(|| fluxdown_engine::site_auth::site_key(&format!("https://{input}")))
+        .ok_or_else(|| ApiError::BadRequest("invalid site".to_string()))
 }
 
 /// 引擎 `link::DiscoveredPeer` → wire DTO（`kind` → `source` 小写字符串）。

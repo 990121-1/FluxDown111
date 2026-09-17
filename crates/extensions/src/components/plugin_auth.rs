@@ -1,13 +1,15 @@
 //! 插件平台登录对话框：一次登录后凭据由引擎保存，后续插件请求自动复用。
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use fluxdown_protocol::PluginAuthResponse;
+use fluxdown_protocol::{PluginAuthResponse, RpcErrorData};
 use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::CONTROL_HEIGHT;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div,
+    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
+    Window, div,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _,
@@ -17,6 +19,7 @@ use gpui_component::{
     v_flex,
 };
 
+use crate::controller::plugin_auth_call;
 use crate::{ExtensionsPort, error_text};
 
 pub struct PluginAuthDialog {
@@ -24,13 +27,17 @@ pub struct PluginAuthDialog {
     port: Arc<dyn ExtensionsPort>,
     identity: String,
     site: Entity<InputState>,
+    _site_subscription: Subscription,
     input: Entity<InputState>,
     session_id: String,
+    auth_ref: String,
     status: String,
     challenge: Option<String>,
     challenge_type: Option<String>,
     message: Option<String>,
     busy: bool,
+    poll_task_active: bool,
+    logout_pending: bool,
 }
 
 impl PluginAuthDialog {
@@ -51,19 +58,62 @@ impl PluginAuthDialog {
             .to_owned();
         let site = cx.new(|cx| InputState::new(window, cx).placeholder(site_placeholder));
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(input_placeholder));
-        Self {
+        let _site_subscription =
+            cx.subscribe_in(&site, window, |this, input, event, window, cx| {
+                if matches!(
+                    event,
+                    gpui_component::input::InputEvent::Blur
+                        | gpui_component::input::InputEvent::PressEnter { .. }
+                ) && !this.busy
+                {
+                    this.request_status(&input.read(cx).value(), window, cx);
+                }
+            });
+        let dialog = Self {
             translator,
             port,
             identity,
             site,
+            _site_subscription,
             input,
             session_id: String::new(),
+            auth_ref: String::new(),
             status: String::new(),
             challenge: None,
             challenge_type: None,
             message: None,
-            busy: false,
-        }
+            busy: true,
+            poll_task_active: false,
+            logout_pending: false,
+        };
+        let status_future =
+            plugin_auth_call(&dialog.port, &dialog.identity, "status", "", "", "", "");
+        cx.spawn_in(window, async move |this, cx| {
+            let result = status_future.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                this.apply_result(result, false, window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        dialog
+    }
+
+    fn request_status(&mut self, site: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.busy = true;
+        self.message = None;
+        let future = plugin_auth_call(&self.port, &self.identity, "status", site, "", "", "");
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = future.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                this.apply_result(result, false, window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn call(&mut self, action: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -76,42 +126,23 @@ impl PluginAuthDialog {
         let site = self.site.read(cx).value().to_string();
         let input = self.input.read(cx).value().to_string();
         let session_id = self.session_id.clone();
-        let future = self.port.call(
-            fluxdown_protocol::method::DAEMON_PLUGIN_AUTH,
-            serde_json::json!({
-                "identity": identity,
-                "action": action,
-                "site": site,
-                "sessionId": session_id,
-                "input": input,
-            }),
+        let notify_success = matches!(action, "begin" | "poll");
+        let future = plugin_auth_call(
+            &self.port,
+            &identity,
+            action,
+            &site,
+            &self.auth_ref,
+            &session_id,
+            &input,
         );
+        self.logout_pending = action == "logout";
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = future.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
-                match result {
-                    Ok(value) => match serde_json::from_value::<PluginAuthResponse>(value) {
-                        Ok(response) => this.apply_response(response, window, cx),
-                        Err(_) => {
-                            this.message = Some(
-                                this.translator
-                                    .read(cx)
-                                    .text("pluginAuthInvalidResponse")
-                                    .to_owned(),
-                            )
-                        }
-                    },
-                    Err(error) => {
-                        let text = error_text(this.translator.read(cx), &error);
-                        this.message = Some(
-                            this.translator
-                                .read(cx)
-                                .text_with("pluginAuthFailed", &[("message", &text)]),
-                        );
-                    }
-                }
+                this.apply_result(result, notify_success, window, cx);
                 cx.notify();
             });
         })
@@ -126,14 +157,14 @@ impl PluginAuthDialog {
         let identity = self.identity.clone();
         let site = self.site.read(cx).value().to_string();
         let session_id = self.session_id.clone();
-        let future = self.port.call(
-            fluxdown_protocol::method::DAEMON_PLUGIN_AUTH,
-            serde_json::json!({
-                "identity": identity,
-                "action": "cancel",
-                "site": site,
-                "sessionId": session_id,
-            }),
+        let future = plugin_auth_call(
+            &self.port,
+            &identity,
+            "cancel",
+            &site,
+            &self.auth_ref,
+            &session_id,
+            "",
         );
         window.close_dialog(cx);
         cx.spawn(async move |_this, _cx| {
@@ -145,15 +176,32 @@ impl PluginAuthDialog {
     fn apply_response(
         &mut self,
         response: PluginAuthResponse,
+        notify_success: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.status = response.status.clone();
         self.session_id = response.session_id;
+        self.auth_ref = response.auth_ref.unwrap_or_default();
         self.challenge = response.challenge;
         self.challenge_type = response.challenge_type;
         self.message = (!response.message.is_empty()).then_some(response.message);
-        if response.status == "success" {
+        if self.logout_pending && self.status == "success" {
+            self.auth_ref.clear();
+            self.session_id.clear();
+            self.challenge = None;
+            self.challenge_type = None;
+            self.logout_pending = false;
+        }
+        if self.status == "pending"
+            && self
+                .challenge_type
+                .as_deref()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("qrcode"))
+        {
+            self.start_polling(window, cx);
+        }
+        if notify_success && response.status == "success" {
             window.push_notification(
                 gpui_component::notification::Notification::success(
                     self.translator
@@ -163,7 +211,85 @@ impl PluginAuthDialog {
                 ),
                 cx,
             );
-            window.close_dialog(cx);
+        }
+    }
+
+    /// QR 登录每两秒轮询一次；实体销毁后 `update` 失败，任务自然退出。
+    fn start_polling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.poll_task_active {
+            return;
+        }
+        self.poll_task_active = true;
+        let port = self.port.clone();
+        let identity = self.identity.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                let Ok(Some(future)) = this.update(cx, |this, cx| {
+                    if this.busy
+                        || this.session_id.is_empty()
+                        || !this
+                            .challenge_type
+                            .as_deref()
+                            .is_some_and(|kind| kind.eq_ignore_ascii_case("qrcode"))
+                    {
+                        this.poll_task_active = false;
+                        return None;
+                    }
+                    this.busy = true;
+                    cx.notify();
+                    Some(plugin_auth_call(
+                        &port,
+                        &identity,
+                        "poll",
+                        this.site.read(cx).value().as_ref(),
+                        &this.auth_ref,
+                        &this.session_id,
+                        this.input.read(cx).value().as_ref(),
+                    ))
+                }) else {
+                    break;
+                };
+                let result = future.await;
+                let Ok(()) = this.update_in(cx, |this, window, cx| {
+                    this.busy = false;
+                    this.apply_result(result, true, window, cx);
+                    cx.notify();
+                }) else {
+                    break;
+                };
+            }
+        })
+        .detach();
+    }
+
+    fn apply_result(
+        &mut self,
+        result: Result<serde_json::Value, RpcErrorData>,
+        notify_success: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(value) => match serde_json::from_value::<PluginAuthResponse>(value) {
+                Ok(response) => self.apply_response(response, notify_success, window, cx),
+                Err(_) => {
+                    self.message = Some(
+                        self.translator
+                            .read(cx)
+                            .text("pluginAuthInvalidResponse")
+                            .to_owned(),
+                    )
+                }
+            },
+            Err(error) => {
+                let text = error_text(self.translator.read(cx), &error);
+                self.message = Some(
+                    self.translator
+                        .read(cx)
+                        .text_with("pluginAuthFailed", &[("message", &text)]),
+                );
+            }
         }
     }
 }
@@ -235,24 +361,42 @@ impl Render for PluginAuthDialog {
                             .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
                     )
                     .child(
-                        Button::new("plugin-auth-begin")
-                            .primary()
-                            .h(CONTROL_HEIGHT)
-                            .label(if self.session_id.is_empty() {
-                                begin
-                            } else {
-                                poll
+                        div()
+                            .when(self.auth_ref.is_empty(), |this| {
+                                this.child(
+                                    Button::new("plugin-auth-begin")
+                                        .primary()
+                                        .h(CONTROL_HEIGHT)
+                                        .label(if self.session_id.is_empty() {
+                                            begin
+                                        } else {
+                                            poll
+                                        })
+                                        .loading(self.busy)
+                                        .disabled(self.busy)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let action = if this.session_id.is_empty() {
+                                                "begin"
+                                            } else {
+                                                "poll"
+                                            };
+                                            this.call(action, window, cx);
+                                        })),
+                                )
                             })
-                            .loading(self.busy)
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let action = if this.session_id.is_empty() {
-                                    "begin"
-                                } else {
-                                    "poll"
-                                };
-                                this.call(action, window, cx);
-                            })),
+                            .when(!self.auth_ref.is_empty(), |this| {
+                                this.child(
+                                    Button::new("plugin-auth-logout")
+                                        .outline()
+                                        .h(CONTROL_HEIGHT)
+                                        .label(translator.text("pluginAuthLogout").to_owned())
+                                        .loading(self.busy)
+                                        .disabled(self.busy)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.call("logout", window, cx);
+                                        })),
+                                )
+                            }),
                     ),
             )
     }

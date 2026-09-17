@@ -100,9 +100,12 @@
 - **门控工具面**（manifest `permissions` 声明才注入）：
   - `flux.auth`（`permissions:["auth"]`）：宿主持久化插件认证档案；`save/get/remove` 管理
     Cookie、Bearer、Basic 或自定义 Header。`flux.fetch` 按显式 `authRef` 或插件+站点默认引用
-    自动注入，认证档案绑定插件和目标站点，过期返回 `authentication_required`。
-  - 登录入口（manifest `auth.entry`）：宿主 RPC `daemon.plugin.auth` 以 `begin`/`poll`/`cancel`
-    调用 `globalThis.authenticate(ctx)`；插件返回二维码挑战，成功后用 `flux.auth.save` 提交凭据。
+    自动注入，认证档案绑定插件和目标站点，过期时隐式引用跳过注入、显式 `authRef` 返回
+    `authentication_required`。档案按 `plugin.<identity>.auth.<site>` 独立配置键保存，卸载插件会清理。
+    `flux.fetch` 返回的同名多值响应头以换行符（`\n`）拼接。
+  - 登录入口（manifest `auth.entry`）：宿主 RPC `daemon.plugin.auth` 以
+    `begin`/`poll`/`cancel`/`logout`/`status` 调用 `globalThis.authenticate(ctx)`；插件返回二维码挑战，
+    成功后用 `flux.auth.save` 提交凭据。
   - `flux.ffmpeg`/`flux.ffprobe`（`permissions:["ffmpeg"]`）：近乎全量 argv，**封网 + 封越牢路径**（拒 URL scheme/绝对路径/`..`），牢笼 = 产物目录（仅 onDone 类有产物钩子可用），sema=2，300s/1800s 超时。
   - `flux.ytdlp`（`permissions:["ytdlp"]`）：**放行 URL/网络**（本职抓站），封危险开关（`--exec`/`--config-location`/`--plugin-dirs`/`--ffmpeg-location`/`--batch-file`…），bridge 自持 per-plugin scratch 牢笼，宿主注入 `--ffmpeg-location`（受管 ffmpeg 不在 PATH）+ `--cache-dir` 收进牢笼。resolve + 全 hook 可用。
   - `flux.fs`：per-plugin 通用临时文件读写（扁平安全名 + 单文件 8MB/总量 64MB/文件数 100 上限 + unix 0600），取代"每种输入给工具加类型化字段"的反模式。

@@ -15,7 +15,8 @@ use fluxdown_protocol::daemon::{
     LinkPairConfirmRequest, LinkPairHelloRequest, LinkPairHelloResponse, LinkPingInfo,
     MarketEntryDto, PluginAuthRequest, PluginAuthResponse, PluginDto, QueueDto,
     ResolvePreviewRequest, ResolvePreviewResponse, RssItemActionRequest, RssItemDto, RssSourceDto,
-    RssValidateRequest, RssValidateResponse, TaskDto,
+    RssValidateRequest, RssValidateResponse, SiteAuthCredentialDto, SiteAuthEntryDto,
+    SiteAuthSaveRequest, TaskDto,
 };
 
 /// 404 fallback 响应的 message —— 请求命中了未注册的路由（例如管理 API 分组
@@ -134,6 +135,36 @@ pub trait ApiHost: Send + Sync {
         let _ = changes;
         Err(ApiError::Internal(
             "config change not supported by this host".to_string(),
+        ))
+    }
+
+    /// 列出已保存的站点凭据，只返回站点和用户名。
+    async fn list_site_auth(&self) -> Result<Vec<SiteAuthEntryDto>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// 读取单站点凭据详情。该接口是定向受保护接口，不属于通用配置快照。
+    async fn get_site_auth(&self, site: &str) -> Result<Option<SiteAuthCredentialDto>, ApiError> {
+        let _ = site;
+        Ok(None)
+    }
+
+    /// 保存单站点凭据。
+    async fn save_site_auth(
+        &self,
+        request: SiteAuthSaveRequest,
+    ) -> Result<SiteAuthEntryDto, ApiError> {
+        let _ = request;
+        Err(ApiError::Internal(
+            "site auth change not supported by this host".to_string(),
+        ))
+    }
+
+    /// 删除单站点凭据。
+    async fn delete_site_auth(&self, site: &str) -> Result<(), ApiError> {
+        let _ = site;
+        Err(ApiError::Internal(
+            "site auth change not supported by this host".to_string(),
         ))
     }
 

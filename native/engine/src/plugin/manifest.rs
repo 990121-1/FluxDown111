@@ -156,7 +156,8 @@ pub struct HooksDecl {
 }
 
 /// 平台登录入口。脚本实现 `globalThis.authenticate(ctx)`，由 daemon 以
-/// `begin`/`poll`/`cancel` action 驱动，登录成功后脚本调用 `flux.auth.save`。
+/// `begin`/`poll`/`cancel`/`logout`/`status` action 驱动，登录成功后脚本调用
+/// `flux.auth.save`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthDecl {
@@ -298,6 +299,21 @@ impl PluginManifest {
             {
                 return Err(PluginError::ManifestInvalid(
                     "hooks match.urls 不可为空".to_string(),
+                ));
+            }
+        }
+
+        // auth：入口同样是插件包内的可执行脚本，且必须显式授予认证能力。
+        if let Some(a) = &self.auth {
+            if !is_safe_relative_path(&a.entry) {
+                return Err(PluginError::ManifestInvalid(format!(
+                    "auth entry 路径 '{}' 非法",
+                    a.entry
+                )));
+            }
+            if !self.has_permission(PERMISSION_AUTH) {
+                return Err(PluginError::ManifestInvalid(
+                    "声明 auth.entry 时 permissions 必须包含 auth".to_string(),
                 ));
             }
         }

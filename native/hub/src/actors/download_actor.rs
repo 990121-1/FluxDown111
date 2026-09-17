@@ -2277,39 +2277,41 @@ pub async fn run(db_dir: PathBuf) -> Result<(), ActorError> {
                             if let Some(pm) = engine.manager.plugin_manager() {
                                 let identity = msg.identity.clone();
                                 let session_id = msg.session_id.clone();
-                                let result = pm
-                                    .authenticate(
-                                        &identity,
-                                        fluxdown_engine::plugin::AuthRequest {
-                                            action: msg.action,
-                                            site: msg.site,
-                                            auth_ref: msg.auth_ref,
-                                            session_id: msg.session_id,
-                                            input: msg.input,
+                                tokio::spawn(async move {
+                                    let result = pm
+                                        .authenticate(
+                                            &identity,
+                                            fluxdown_engine::plugin::AuthRequest {
+                                                action: msg.action,
+                                                site: msg.site,
+                                                auth_ref: msg.auth_ref,
+                                                session_id: msg.session_id,
+                                                input: msg.input,
+                                            },
+                                        )
+                                        .await;
+                                    let result = match result {
+                                        Ok(result) => crate::signals::PluginAuthResult {
+                                            identity,
+                                            status: result.status,
+                                            session_id: result.session_id,
+                                            challenge: result.challenge.unwrap_or_default(),
+                                            challenge_type: result.challenge_type.unwrap_or_default(),
+                                            message: result.message,
+                                            auth_ref: result.auth_ref.unwrap_or_default(),
                                         },
-                                    )
-                                    .await;
-                                let result = match result {
-                                    Ok(result) => crate::signals::PluginAuthResult {
-                                        identity,
-                                        status: result.status,
-                                        session_id: result.session_id,
-                                        challenge: result.challenge.unwrap_or_default(),
-                                        challenge_type: result.challenge_type.unwrap_or_default(),
-                                        message: result.message,
-                                        auth_ref: result.auth_ref.unwrap_or_default(),
-                                    },
-                                    Err(error) => crate::signals::PluginAuthResult {
-                                        identity,
-                                        status: "error".to_string(),
-                                        session_id,
-                                        challenge: String::new(),
-                                        challenge_type: String::new(),
-                                        message: error.to_string(),
-                                        auth_ref: String::new(),
-                                    },
-                                };
-                                result.send_signal_to_dart();
+                                        Err(error) => crate::signals::PluginAuthResult {
+                                            identity,
+                                            status: "error".to_string(),
+                                            session_id,
+                                            challenge: String::new(),
+                                            challenge_type: String::new(),
+                                            message: error.to_string(),
+                                            auth_ref: String::new(),
+                                        },
+                                    };
+                                    result.send_signal_to_dart();
+                                });
                             } else {
                                 crate::signals::PluginAuthResult {
                                     identity: msg.identity,

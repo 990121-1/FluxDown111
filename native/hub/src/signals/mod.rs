@@ -1115,7 +1115,7 @@ pub struct SetPluginEnabled {
     pub enabled: bool,
 }
 
-/// Drive a plugin login flow (begin/poll/cancel; Dart → Rust).
+/// Drive a plugin login flow (begin/poll/cancel/logout/status; Dart → Rust).
 #[derive(Deserialize, DartSignal)]
 pub struct AuthenticatePlugin {
     pub identity: String,

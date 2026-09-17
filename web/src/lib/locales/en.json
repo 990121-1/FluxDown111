@@ -954,6 +954,7 @@
   "plugins.authSitePlaceholder": "Site URL (optional)",
   "plugins.authInputPlaceholder": "Account, verification code, or other requested input",
   "plugins.authPending": "Waiting for login…",
+  "plugins.authQrGenerating": "Generating QR code…",
   "plugins.authBegin": "Start login",
   "plugins.authPoll": "Check status",
   "plugins.authChallenge": "Login challenge",

@@ -1684,6 +1684,26 @@ pub struct SiteAuthEntryDto {
     pub user: String,
 }
 
+/// 单站点 HTTP Basic 凭据详情；仅由受保护的定向查询返回。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SiteAuthCredentialDto {
+    pub site: String,
+    pub user: String,
+    pub pass: String,
+}
+
+/// 保存单站点 HTTP Basic 凭据的请求。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SiteAuthSaveRequest {
+    pub site: String,
+    pub user: String,
+    pub pass: String,
+}
+
 /// `daemon.siteAuth.delete` 参数。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

@@ -292,7 +292,7 @@ impl ExtensionsController {
         )
     }
 
-    /// 驱动插件登录；`action` 为 `begin` / `poll` / `cancel`。
+    /// 驱动插件登录；`action` 为 `begin` / `poll` / `cancel` / `logout` / `status`。
     pub fn plugin_auth(
         &self,
         identity: String,
@@ -302,16 +302,17 @@ impl ExtensionsController {
         session_id: String,
         input: String,
     ) -> PortFuture<serde_json::Value> {
-        self.call(
-            method::DAEMON_PLUGIN_AUTH,
-            serde_json::json!({
-                "identity": identity,
-                "action": action,
-                "site": site,
-                "authRef": auth_ref,
-                "sessionId": session_id,
-                "input": input,
-            }),
+        if self.stale {
+            return unavailable();
+        }
+        plugin_auth_call(
+            &self.port,
+            &identity,
+            action,
+            &site,
+            &auth_ref,
+            &session_id,
+            &input,
         )
     }
 
@@ -387,6 +388,29 @@ impl ExtensionsController {
             }),
         )
     }
+}
+
+/// 统一构造插件认证 RPC，供 controller 与认证对话框共用，避免请求字段分叉。
+pub(crate) fn plugin_auth_call(
+    port: &Arc<dyn ExtensionsPort>,
+    identity: &str,
+    action: &str,
+    site: &str,
+    auth_ref: &str,
+    session_id: &str,
+    input: &str,
+) -> PortFuture<serde_json::Value> {
+    port.call(
+        method::DAEMON_PLUGIN_AUTH,
+        serde_json::json!({
+            "identity": identity,
+            "action": action,
+            "site": site,
+            "authRef": auth_ref,
+            "sessionId": session_id,
+            "input": input,
+        }),
+    )
 }
 
 /// 插件设置保存请求；设置对话框与控制器共用同一份参数构造。

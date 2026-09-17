@@ -36,6 +36,8 @@ import type {
   RssSourceDto,
   RssValidateRequest,
   RssValidateResponse,
+  SiteAuthCredential,
+  SiteAuthEntry,
   SetupStatus,
   StatsResponse,
   TaskDto,
@@ -202,6 +204,16 @@ export const api = {
   getConfig: () => apiFetch<ConfigMap>('/api/v1/config'),
   putConfig: (entries: ConfigMap) =>
     apiFetch<unknown>('/api/v1/config', { method: 'PUT', body: JSON.stringify(entries) }),
+  listSiteAuth: () => apiFetch<SiteAuthEntry[]>('/api/v1/site-auth'),
+  getSiteAuth: (site: string) =>
+    apiFetch<SiteAuthCredential>(`/api/v1/site-auth/${encodeURIComponent(site)}`),
+  saveSiteAuth: (request: SiteAuthCredential) =>
+    apiFetch<SiteAuthEntry>('/api/v1/site-auth', {
+      method: 'PUT',
+      body: JSON.stringify(request),
+    }),
+  deleteSiteAuth: (site: string) =>
+    apiFetch<unknown>(`/api/v1/site-auth/${encodeURIComponent(site)}`, { method: 'DELETE' }),
 
   refreshTrackerSub: () =>
     apiFetch<TrackerSubRefreshResponse>('/api/v1/bt/tracker-sub/refresh', { method: 'POST' }),

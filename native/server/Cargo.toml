@@ -35,9 +35,7 @@ fluxdown_protocol = { version = "0.1.0", path = "../protocol", features = ["open
 # 匿名统计上报（analytics.rs）。特性集与 engine 完全一致，避免 workspace
 # feature 合并出第二套 reqwest 编译配置。
 [target.'cfg(windows)'.dependencies]
-# Keep the headless server on the same Rustls backend as the engine. Schannel
-# fails with SEC_E_NO_CREDENTIALS for HTTPS requests through some local proxies.
-reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "cookies", "json", "socks", "charset", "http2"] }
+reqwest = { version = "0.12", features = ["stream", "native-tls", "cookies", "json", "socks"] }
 
 [target.'cfg(unix)'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "rustls-tls-webpki-roots", "cookies", "json", "socks", "charset", "http2", "system-proxy", "macos-system-configuration"] }
