@@ -1866,6 +1866,12 @@ class S {
   String get pluginDevModeBadge => _r('pluginDevModeBadge');
   String get pluginDisabledManual => _r('pluginDisabledManual');
   String get pluginDisabledCircuitBreaker => _r('pluginDisabledCircuitBreaker');
+  String get pluginLoadStatusLoaded => _r('pluginLoadStatusLoaded');
+  String get pluginLoadStatusFailed => _r('pluginLoadStatusFailed');
+  String get pluginLoadErrorTitle => _r('pluginLoadErrorTitle');
+  String get pluginLoadErrorBody => _r('pluginLoadErrorBody');
+  String get pluginLoadErrorCopy => _r('pluginLoadErrorCopy');
+  String get pluginLoadErrorCopied => _r('pluginLoadErrorCopied');
   String get pluginSettingsTooltip => _r('pluginSettingsTooltip');
   String get pluginUninstallTooltip => _r('pluginUninstallTooltip');
   String get pluginUninstallTitle => _r('pluginUninstallTitle');

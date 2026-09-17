@@ -1279,8 +1279,8 @@ fn ytdlp_arg_reject_reason(a: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        arg_reject_reason, is_globally_routable_unicast, truncate_utf8, validate_ffmpeg_args,
-        validate_ytdlp_args, ytdlp_arg_reject_reason,
+        arg_reject_reason, collect_response_headers, is_globally_routable_unicast, truncate_utf8,
+        validate_ffmpeg_args, validate_ytdlp_args, ytdlp_arg_reject_reason,
     };
     use std::net::IpAddr;
 

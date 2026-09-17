@@ -602,6 +602,16 @@ pub struct PluginDto {
     /// manifest 声明的订阅 provider ID，供订阅创建界面生成可选来源。
     #[serde(default)]
     pub subscription_provider_ids: Vec<String>,
+    /// `Loaded` / `Failed`；与 `enabled` 独立，手动禁用的插件仍可能已加载。
+    #[serde(default = "default_plugin_load_status")]
+    pub load_status: String,
+    /// 加载失败的可读原因；成功时为空。
+    #[serde(default)]
+    pub load_error: String,
+}
+
+fn default_plugin_load_status() -> String {
+    "Loaded".to_string()
 }
 
 /// 驱动插件平台登录（二维码/账号登录）的请求。

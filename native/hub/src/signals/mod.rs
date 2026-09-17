@@ -1227,6 +1227,10 @@ pub struct PluginInfoSignal {
     pub auth_supported: bool,
     /// manifest 声明的订阅 provider ID，供订阅创建界面生成可选来源。
     pub subscription_provider_ids: Vec<String>,
+    /// `Loaded` / `Failed`；与 `enabled` 独立，手动禁用的插件仍可能已加载。
+    pub load_status: String,
+    /// 加载失败的可读原因；成功时为空。
+    pub load_error: String,
 }
 
 #[cfg(hub_plugins)]
@@ -1250,6 +1254,8 @@ impl From<fluxdown_engine::plugin::PluginInfo> for PluginInfoSignal {
             permissions: info.permissions,
             auth_supported: info.auth_supported,
             subscription_provider_ids: info.subscription_provider_ids,
+            load_status: info.load_status,
+            load_error: info.load_error,
         }
     }
 }

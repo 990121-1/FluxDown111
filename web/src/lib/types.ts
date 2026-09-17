@@ -657,6 +657,10 @@ export interface PluginDto {
   authSupported?: boolean
   /** manifest 声明的订阅 provider ID，旧服务端可能缺省。 */
   subscriptionProviderIds?: string[]
+  /** `Loaded` / `Failed`；与 enabled 独立。旧服务端缺省视为已加载。 */
+  loadStatus?: 'Loaded' | 'Failed' | string
+  /** 加载失败的可读原因。 */
+  loadError?: string
 }
 
 export interface PluginAuthResponse {

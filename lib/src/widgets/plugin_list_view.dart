@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -457,11 +458,44 @@ class _PluginCard extends StatelessWidget {
     required this.onAuth,
   });
 
+  void _showLoadError(BuildContext context) {
+    final s = currentS;
+    final c = AppColors.of(context);
+    showShadDialog(
+      context: context,
+      barrierColor: c.dialogBarrier,
+      animateIn: const [],
+      animateOut: const [],
+      builder: (ctx) => ShadDialog(
+        title: Text(s.pluginLoadErrorTitle),
+        description: Text(s.pluginLoadErrorBody),
+        child: Text(plugin.loadError),
+        actions: [
+          ShadButton.outline(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(s.close),
+          ),
+          ShadButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: plugin.loadError));
+              Navigator.of(ctx).pop();
+              FluxSonner.of(context).show(
+                ShadToast(title: Text(s.pluginLoadErrorCopied)),
+              );
+            },
+            child: Text(s.pluginLoadErrorCopy),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = currentS;
     final c = AppColors.of(context);
     final m = AppMetrics.of(context);
+    final loadFailed = plugin.loadStatus == 'Failed';
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -522,6 +556,15 @@ class _PluginCard extends StatelessWidget {
                             color: c.accent,
                             bg: m.subtle(c.accent),
                           ),
+                        _Badge(
+                          text: loadFailed
+                              ? s.pluginLoadStatusFailed
+                              : s.pluginLoadStatusLoaded,
+                          color: loadFailed ? AppColors.red : AppColors.green,
+                          bg: m.subtle(
+                            loadFailed ? AppColors.red : AppColors.green,
+                          ),
+                        ),
                         if (plugin.disabledReason == 'Manual')
                           _Badge(
                             text: s.pluginDisabledManual,
@@ -540,16 +583,34 @@ class _PluginCard extends StatelessWidget {
                       const SizedBox(height: 2),
                       _HoverDescription(text: plugin.description),
                     ],
+                    if (loadFailed && plugin.loadError.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: GestureDetector(
+                          onTap: () => _showLoadError(context),
+                          child: Text(
+                            plugin.loadError,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppColors.red,
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
               const SizedBox(width: 12),
               ShadSwitch(
                 value: plugin.enabled,
-                onChanged: (v) => provider.setEnabled(plugin.identity, v),
+                onChanged: loadFailed
+                    ? null
+                    : (v) => provider.setEnabled(plugin.identity, v),
               ),
               const SizedBox(width: 4),
-              if (plugin.settings.isNotEmpty)
+              if (!loadFailed && plugin.settings.isNotEmpty)
                 ShadIconButton.ghost(
                   icon: Icon(
                     LucideIcons.settings2,
@@ -562,7 +623,7 @@ class _PluginCard extends StatelessWidget {
                     provider: provider,
                   ),
                 ),
-              if (plugin.authSupported)
+              if (!loadFailed && plugin.authSupported)
                 ShadIconButton.ghost(
                   icon: Icon(
                     LucideIcons.logIn,

@@ -375,6 +375,8 @@ pub fn plugin_info_to_dto(
         permissions: plugin.permissions,
         auth_supported: plugin.auth_supported,
         subscription_provider_ids: plugin.subscription_provider_ids,
+        load_status: plugin.load_status,
+        load_error: plugin.load_error,
     }
 }
 

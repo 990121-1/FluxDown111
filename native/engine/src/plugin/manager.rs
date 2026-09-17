@@ -180,6 +180,25 @@ pub struct PluginInfo {
     pub auth_supported: bool,
     /// manifest 声明的订阅 provider ID；仅启用插件会被前端作为可选订阅来源展示。
     pub subscription_provider_ids: Vec<String>,
+    /// 加载状态：`Loaded` 表示已通过启动时的 manifest/源码加载，`Failed` 表示
+    /// 目录仍存在但加载失败。与 `enabled` 分离：手动禁用的插件仍可能已加载。
+    pub load_status: String,
+    /// 加载失败的可读原因；加载成功时为空。
+    pub load_error: String,
+}
+
+/// 目录或 dev 配置仍存在、但没有进入运行时快照的插件。
+///
+/// 失败插件不能混入 `LoadedPlugin`，否则解析链路会误把它当作可运行插件；
+/// 但管理页仍需要看到它，才能展示原因并允许用户卸载或修复。
+#[derive(Debug, Clone)]
+struct FailedPlugin {
+    identity: String,
+    /// 实际扫描到的插件目录。identity 可能来自非法 manifest，不能反向拼接路径。
+    dir: Box<Path>,
+    manifest: Option<Box<PluginManifest>>,
+    dev_mode: bool,
+    error: String,
 }
 
 /// 安装来源判别（供 actor 分发规则表）。
@@ -194,6 +213,7 @@ pub struct PluginManager {
     runtime: Arc<dyn ScriptRuntime>,
     bridge: Arc<dyn PluginBridge>,
     plugins: RwLock<Arc<Vec<LoadedPlugin>>>,
+    failed_plugins: RwLock<Arc<Vec<FailedPlugin>>>,
     db: Db,
     root: PathBuf,
     app_version: String,
@@ -216,6 +236,7 @@ impl PluginManager {
             runtime,
             bridge,
             plugins: RwLock::new(Arc::new(Vec::new())),
+            failed_plugins: RwLock::new(Arc::new(Vec::new())),
             db,
             root,
             app_version,
@@ -233,15 +254,20 @@ impl PluginManager {
     /// 扫描根目录 + `plugin.dev.*` 键，解析并加载全部插件。
     pub async fn load_all(&self) {
         let mut loaded: Vec<LoadedPlugin> = Vec::new();
+        let mut failed: Vec<FailedPlugin> = Vec::new();
 
         // 1. 安装目录下的子目录。
         if let Ok(mut rd) = tokio::fs::read_dir(&self.root).await {
             while let Ok(Some(entry)) = rd.next_entry().await {
                 let path = entry.path();
-                if path.is_dir()
-                    && let Some(p) = self.load_one(&path, false).await
-                {
-                    loaded.push(p);
+                let is_internal_dir = path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with('.'));
+                if path.is_dir() && !is_internal_dir {
+                    match self.load_one(&path, false, None).await {
+                        Ok(p) => loaded.push(p),
+                        Err(p) => failed.push(p),
+                    }
                 }
             }
         }
@@ -250,29 +276,65 @@ impl PluginManager {
         if let Ok(entries) = self.db.list_config_with_prefix("plugin.dev.").await {
             for (_k, path_str) in entries {
                 let path = PathBuf::from(&path_str);
-                if path.is_dir()
-                    && let Some(p) = self.load_one(&path, true).await
+                match self
+                    .load_one(&path, true, Some(identity_from_dev_key(&_k)))
+                    .await
                 {
-                    loaded.push(p);
+                    Ok(p) => loaded.push(p),
+                    Err(p) => failed.push(p),
                 }
             }
         }
 
         *self.plugins.write().await = Arc::new(loaded);
+        *self.failed_plugins.write().await = Arc::new(failed);
     }
 
-    /// 加载单个插件目录。失败记 warn 返回 None（不阻塞其他插件）。
-    async fn load_one(&self, dir: &Path, dev: bool) -> Option<LoadedPlugin> {
+    /// 加载单个插件目录。失败记 warn 并保留诊断信息（不阻塞其他插件）。
+    async fn load_one(
+        &self,
+        dir: &Path,
+        dev: bool,
+        identity_hint: Option<&str>,
+    ) -> Result<LoadedPlugin, FailedPlugin> {
         let manifest_path = dir.join("manifest.json");
-        let bytes = tokio::fs::read(&manifest_path).await.ok()?;
-        let manifest = match PluginManifest::parse(&bytes).and_then(|m| {
-            m.validate()?;
-            Ok(m)
-        }) {
-            Ok(m) => m,
-            Err(e) => {
-                log_info!("[plugin] 跳过 {dir:?}: manifest 非法: {e}");
-                return None;
+        let bytes = match tokio::fs::read(&manifest_path).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let failure = FailedPlugin {
+                    identity: failure_identity(dir, identity_hint),
+                    dir: dir.to_path_buf().into_boxed_path(),
+                    manifest: None,
+                    dev_mode: dev,
+                    error: format!("读取 manifest.json 失败: {error}"),
+                };
+                log_info!("[plugin] 跳过 {dir:?}: {}", failure.error);
+                return Err(failure);
+            }
+        };
+        let manifest = match PluginManifest::parse(&bytes) {
+            Ok(manifest) => {
+                if let Err(error) = manifest.validate() {
+                    log_info!("[plugin] 跳过 {dir:?}: manifest 非法: {error}");
+                    return Err(FailedPlugin {
+                        identity: manifest.identity.clone(),
+                        dir: dir.to_path_buf().into_boxed_path(),
+                        manifest: Some(Box::new(manifest)),
+                        dev_mode: dev,
+                        error: error.to_string(),
+                    });
+                }
+                manifest
+            }
+            Err(error) => {
+                log_info!("[plugin] 跳过 {dir:?}: manifest 非法: {error}");
+                return Err(FailedPlugin {
+                    identity: failure_identity(dir, identity_hint),
+                    dir: dir.to_path_buf().into_boxed_path(),
+                    manifest: None,
+                    dev_mode: dev,
+                    error: error.to_string(),
+                });
             }
         };
 
@@ -281,13 +343,20 @@ impl PluginManager {
             && !self.app_version.is_empty()
             && !super::semver::satisfies_min(&self.app_version, &manifest.min_app_version)
         {
+            let required_version = manifest.min_app_version.clone();
             log_info!(
                 "[plugin] 跳过 {}: 需 App ≥ {}，当前 {}",
                 manifest.identity,
-                manifest.min_app_version,
+                required_version,
                 self.app_version
             );
-            return None;
+            return Err(FailedPlugin {
+                identity: manifest.identity.clone(),
+                dir: dir.to_path_buf().into_boxed_path(),
+                manifest: Some(Box::new(manifest)),
+                dev_mode: dev,
+                error: format!("需要 App ≥ {}，当前 {}", required_version, self.app_version),
+            });
         }
 
         let resolver_entry = manifest.resolvers.first().map(|r| dir.join(&r.entry));
@@ -319,7 +388,13 @@ impl PluginManager {
                             "[plugin] 跳过 {}: 读取 resolver 失败: {e}",
                             manifest.identity
                         );
-                        return None;
+                        return Err(FailedPlugin {
+                            identity: manifest.identity.clone(),
+                            dir: dir.to_path_buf().into_boxed_path(),
+                            manifest: Some(Box::new(manifest.clone())),
+                            dev_mode: dev,
+                            error: format!("读取 resolver 失败: {e}"),
+                        });
                     }
                 },
                 None => None,
@@ -329,7 +404,13 @@ impl PluginManager {
                     Ok(s) => Some(s),
                     Err(e) => {
                         log_info!("[plugin] 跳过 {}: 读取 hooks 失败: {e}", manifest.identity);
-                        return None;
+                        return Err(FailedPlugin {
+                            identity: manifest.identity.clone(),
+                            dir: dir.to_path_buf().into_boxed_path(),
+                            manifest: Some(Box::new(manifest.clone())),
+                            dev_mode: dev,
+                            error: format!("读取 hooks 失败: {e}"),
+                        });
                     }
                 },
                 None => None,
@@ -339,7 +420,13 @@ impl PluginManager {
                     Ok(s) => Some(s),
                     Err(e) => {
                         log_info!("[plugin] 跳过 {}: 读取 auth 失败: {e}", manifest.identity);
-                        return None;
+                        return Err(FailedPlugin {
+                            identity: manifest.identity.clone(),
+                            dir: dir.to_path_buf().into_boxed_path(),
+                            manifest: Some(Box::new(manifest.clone())),
+                            dev_mode: dev,
+                            error: format!("读取 auth 失败: {e}"),
+                        });
                     }
                 },
                 None => None,
@@ -352,7 +439,13 @@ impl PluginManager {
                             "[plugin] 跳过 {}: 读取 subscription 失败: {e}",
                             manifest.identity
                         );
-                        return None;
+                        return Err(FailedPlugin {
+                            identity: manifest.identity.clone(),
+                            dir: dir.to_path_buf().into_boxed_path(),
+                            manifest: Some(Box::new(manifest.clone())),
+                            dev_mode: dev,
+                            error: format!("读取 subscription 失败: {e}"),
+                        });
                     }
                 },
                 None => None,
@@ -380,7 +473,7 @@ impl PluginManager {
         // 无 enabled 键 = 新装默认启用。
         let enabled = enabled_str.as_deref().map(|v| v == "true").unwrap_or(true);
 
-        Some(LoadedPlugin {
+        Ok(LoadedPlugin {
             manifest,
             dir: dir.to_path_buf(),
             dev,
@@ -738,6 +831,7 @@ impl PluginManager {
                 budget,
                 HostContext {
                     ytdlp_permitted: manifest.has_permission(PERMISSION_YTDLP),
+                    auth_permitted: manifest.has_permission(PERMISSION_AUTH),
                     ..Default::default()
                 },
             )
@@ -1051,8 +1145,26 @@ impl PluginManager {
     /// 安装回滚复用（与 [`Self::uninstall`] 的差别：**不**清任务绑定）。
     async fn purge(&self, identity: &str) -> Result<(), PluginError> {
         // 删安装目录（dev 不删源，仅删配置键）。
-        let dir = self.root.join(identity);
-        if dir.exists() {
+        let failed_plugin = self
+            .failed_plugins
+            .read()
+            .await
+            .iter()
+            .find(|plugin| plugin.identity == identity)
+            .map(|plugin| (plugin.dev_mode, plugin.dir.to_path_buf()));
+        let dir = match failed_plugin {
+            Some((true, _)) => None,
+            Some((false, dir)) => Some(dir),
+            None if is_safe_plugin_identity(identity) => Some(self.root.join(identity)),
+            None => {
+                return Err(PluginError::ManifestInvalid(
+                    "插件 identity 非法，拒绝拼接卸载路径".to_string(),
+                ));
+            }
+        };
+        if let Some(dir) = dir
+            && dir.exists()
+        {
             let _ = tokio::fs::remove_dir_all(&dir).await;
         }
         for prefix in [
@@ -1198,7 +1310,8 @@ impl PluginManager {
     /// 列出全部插件（供 UI）。
     pub async fn list(&self) -> Vec<PluginInfo> {
         let snapshot = self.plugins.read().await.clone();
-        let mut out = Vec::with_capacity(snapshot.len());
+        let failed_snapshot = self.failed_plugins.read().await.clone();
+        let mut out = Vec::with_capacity(snapshot.len() + failed_snapshot.len());
         for p in snapshot.iter() {
             let values = self.load_setting_values(&p.manifest.identity).await;
             out.push(PluginInfo {
@@ -1220,9 +1333,89 @@ impl PluginManager {
                     .iter()
                     .map(|subscription| subscription.provider_id.clone())
                     .collect(),
+                load_status: "Loaded".to_string(),
+                load_error: String::new(),
             });
         }
+        for p in failed_snapshot.iter() {
+            let (enabled, disabled_reason) = self.plugin_state(&p.identity).await;
+            let (
+                name,
+                version,
+                description,
+                homepage,
+                settings,
+                permissions,
+                auth_supported,
+                subscription_provider_ids,
+            ) = match &p.manifest {
+                Some(manifest) => (
+                    manifest.name.clone(),
+                    manifest.version.clone(),
+                    manifest.description.clone(),
+                    manifest.homepage.clone(),
+                    manifest.settings.clone(),
+                    manifest.permissions.clone(),
+                    manifest.auth.is_some(),
+                    manifest
+                        .subscriptions
+                        .iter()
+                        .map(|subscription| subscription.provider_id.clone())
+                        .collect(),
+                ),
+                None => (
+                    p.identity.clone(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                    Vec::new(),
+                ),
+            };
+            let values = self.load_setting_values(&p.identity).await;
+            out.push(PluginInfo {
+                identity: p.identity.clone(),
+                name,
+                version,
+                description,
+                homepage,
+                enabled,
+                dev_mode: p.dev_mode,
+                disabled_reason: disabled_reason.as_str().to_string(),
+                settings,
+                settings_values: values.into_iter().collect(),
+                permissions,
+                auth_supported,
+                subscription_provider_ids,
+                load_status: "Failed".to_string(),
+                load_error: p.error.clone(),
+            });
+        }
+        out.sort_by(|a, b| a.identity.cmp(&b.identity));
         out
+    }
+
+    async fn plugin_state(&self, identity: &str) -> (bool, DisabledReason) {
+        let enabled = self
+            .db
+            .get_config(&format!("plugin.{identity}.enabled"))
+            .await
+            .ok()
+            .flatten()
+            .map(|value| value == "true")
+            .unwrap_or(true);
+        let reason = self
+            .db
+            .get_config(&format!("plugin.{identity}.disabled_reason"))
+            .await
+            .ok()
+            .flatten()
+            .as_deref()
+            .map(DisabledReason::parse)
+            .unwrap_or(DisabledReason::None);
+        (enabled, reason)
     }
 
     /// 按 identity 查插件 manifest 声明的能力权限（供安装后依赖提醒）。
@@ -1260,6 +1453,33 @@ async fn load_setting_values_db(db: &Db, identity: &str) -> HashMap<String, Stri
         }
     }
     map
+}
+
+fn identity_from_dev_key(key: &str) -> &str {
+    key.strip_prefix("plugin.dev.").unwrap_or(key)
+}
+
+fn failure_identity(dir: &Path, identity_hint: Option<&str>) -> String {
+    identity_hint
+        .map(str::to_owned)
+        .or_else(|| {
+            dir.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn is_safe_plugin_identity(identity: &str) -> bool {
+    let Some((author, name)) = identity.split_once('@') else {
+        return false;
+    };
+    !author.is_empty()
+        && !name.is_empty()
+        && !name.contains('@')
+        && [author, name].into_iter().all(|part| {
+            part.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        })
 }
 
 /// 取字段生效值：config 存值 → manifest default → None。
@@ -1380,6 +1600,12 @@ fn validate_subscription_item(item: SubscriptionOutputItem) -> Result<ParsedItem
     }
     if item.link.is_empty() && item.enclosure_url.is_empty() {
         return Err(format!("条目 {} 缺少 link / enclosureUrl", item.guid));
+    }
+    if !item.resolver_item.is_empty() && item.link.is_empty() {
+        return Err(format!(
+            "条目 {} 含 resolverItem 时必须提供 link",
+            item.guid
+        ));
     }
     for (name, url) in [("link", &item.link), ("enclosureUrl", &item.enclosure_url)] {
         if !url.is_empty()
@@ -1617,6 +1843,19 @@ mod tests {
         ));
         // 空 feed（无条目）是合法的：新源尚无内容不算失败。
         assert!(parse_subscription_output(r#"{"items":[]}"#).is_ok());
+    }
+
+    #[test]
+    fn subscription_output_requires_link_for_resolver_item() {
+        let raw = r#"{"items":[{
+            "guid":"resolver-without-link",
+            "resolverItem":"episode@1080p",
+            "enclosureUrl":"https://cdn.example/episode.torrent"
+        }]}"#;
+        assert!(matches!(
+            parse_subscription_output(raw),
+            Err(PluginError::InvalidOutput(_))
+        ));
     }
 
     /// 有 variants 时顶层 url 允许为空（选中变体后覆盖）。

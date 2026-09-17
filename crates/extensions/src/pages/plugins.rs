@@ -353,10 +353,16 @@ impl ExtensionsView {
         } = frame;
         let identity = plugin.identity.clone();
         let busy = stale || self.plugins.busy.contains(&plugin.identity);
+        let load_failed = plugin.load_status == "Failed";
         let badges = [
             plugin
                 .dev_mode
                 .then(|| Tag::info().child(translator.text("pluginDevModeBadge").to_owned())),
+            Some(if load_failed {
+                Tag::danger().child(translator.text("pluginLoadStatusFailed").to_owned())
+            } else {
+                Tag::info().child(translator.text("pluginLoadStatusLoaded").to_owned())
+            }),
             (plugin.disabled_reason == "Manual").then(|| {
                 Tag::secondary().child(translator.text("pluginDisabledManual").to_owned())
             }),
@@ -412,6 +418,16 @@ impl ExtensionsView {
                                 .text_color(theme.muted_foreground)
                                 .child(plugin.description.clone()),
                         )
+                    })
+                    .when(load_failed && !plugin.load_error.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme.danger)
+                                .child(plugin.load_error.clone()),
+                        )
                     }),
             )
             .child(
@@ -428,7 +444,7 @@ impl ExtensionsView {
             .child(
                 Switch::new(("plugin-enabled", index))
                     .checked(plugin.enabled)
-                    .disabled(busy)
+                    .disabled(busy || load_failed)
                     .on_click({
                         let identity = identity.clone();
                         cx.listener(move |this, checked: &bool, window, cx| {
@@ -454,7 +470,7 @@ impl ExtensionsView {
                         .h(CONTROL_HEIGHT)
                         .icon(IconName::Settings2)
                         .tooltip(translator.text("pluginSettingsTooltip").to_owned())
-                        .disabled(busy)
+                        .disabled(busy || load_failed)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_plugin_settings(&identity, window, cx);
                         })),
@@ -468,7 +484,7 @@ impl ExtensionsView {
                         .small()
                         .h(CONTROL_HEIGHT)
                         .label(translator.text("pluginAuthButton").to_owned())
-                        .disabled(busy)
+                        .disabled(busy || load_failed)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_plugin_auth(&identity, window, cx);
                         })),
