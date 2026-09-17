@@ -1,9 +1,9 @@
 /**
  * Resource sniffer diagnostics export.
  *
- * The export deliberately keeps raw URLs and parsed media metadata, because
- * those are the facts needed to diagnose aggregation. Cookies and header
- * values are never serialized; only their presence and header names are kept.
+ * The export keeps URL paths and parsed media metadata, because those are the
+ * facts needed to diagnose aggregation. Credentials in query strings are
+ * redacted, and cookies/header values are never serialized.
  */
 
 import type { DashManifest } from "./dash-manifest";
@@ -26,8 +26,46 @@ export interface ResourceDebugLogOptions {
   source: "popup" | "content";
 }
 
+const SENSITIVE_QUERY_KEYS = new Set([
+  "token",
+  "access_token",
+  "auth",
+  "authorization",
+  "sign",
+  "signature",
+  "sig",
+  "policy",
+  "expires",
+  "expires_at",
+  "expire",
+  "key-pair-id",
+  "key_pair_id",
+  "x-amz-signature",
+  "x-amz-credential",
+  "x-amz-security-token",
+  "hdnts",
+]);
+
+function isSensitiveQueryKey(key: string): boolean {
+  return SENSITIVE_QUERY_KEYS.has(key.toLowerCase()) ||
+    /(^|[-_])(token|sign|signature|credential|authorization|auth|key.?pair.?id|policy|expires?|access.?token)([-_]|$)/i.test(key);
+}
+
+export function redactUrl(url: string | undefined): string {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url);
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (isSensitiveQueryKey(key)) parsed.searchParams.set(key, "[REDACTED]");
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 function canonicalUrl(url: string | undefined): string {
-  return url ? normalizeUrlForDedup(url) : "";
+  return url ? normalizeUrlForDedup(redactUrl(url)) : "";
 }
 
 function timestampIso(value: number): string | undefined {
@@ -42,7 +80,7 @@ function timestampIso(value: number): string | undefined {
 function debugTrack(track: DashManifest["video"][number]) {
   return {
     id: track.id,
-    url: track.url,
+    url: redactUrl(track.url),
     canonicalUrl: canonicalUrl(track.url),
     mimeType: track.mimeType,
     codecs: track.codecs,
@@ -57,9 +95,9 @@ function debugVariant(variant: MediaCandidateVariant) {
   return {
     id: variant.id,
     label: variant.label,
-    videoUrl: variant.videoUrl,
+    videoUrl: redactUrl(variant.videoUrl),
     canonicalVideoUrl: canonicalUrl(variant.videoUrl),
-    audioUrl: variant.audioUrl,
+    audioUrl: redactUrl(variant.audioUrl),
     canonicalAudioUrl: canonicalUrl(variant.audioUrl),
     mimeType: variant.mimeType,
     bandwidth: variant.bandwidth,
@@ -95,7 +133,7 @@ export function buildResourceDebugLog(options: ResourceDebugLogOptions) {
     source: options.source,
     context: {
       tabId: options.tabId,
-      pageUrl: options.pageUrl || "",
+      pageUrl: redactUrl(options.pageUrl),
       pageTitle: options.pageTitle || "",
     },
     summary: {
@@ -111,9 +149,9 @@ export function buildResourceDebugLog(options: ResourceDebugLogOptions) {
     },
     resources: options.resources.map((resource) => ({
       id: resource.id,
-      url: resource.url,
+      url: redactUrl(resource.url),
       canonicalUrl: canonicalUrl(resource.url),
-      finalUrl: resource.finalUrl,
+      finalUrl: redactUrl(resource.finalUrl),
       canonicalFinalUrl: canonicalUrl(resource.finalUrl),
       filename: resource.filename,
       type: resource.type,
@@ -122,13 +160,14 @@ export function buildResourceDebugLog(options: ResourceDebugLogOptions) {
       quality: resource.quality,
       qualities: resource.qualities?.map((quality) => ({
         ...quality,
+        url: redactUrl(quality.url),
         canonicalUrl: canonicalUrl(quality.url),
       })),
       detectedBy: resource.detectedBy,
       detectedAt: resource.detectedAt,
       detectedAtIso: timestampIso(resource.detectedAt),
       tabId: resource.tabId,
-      pageUrl: resource.pageUrl,
+      pageUrl: redactUrl(resource.pageUrl),
       confidence: resource.confidence,
       isAttachment: resource.isAttachment,
       auth: {
@@ -137,7 +176,7 @@ export function buildResourceDebugLog(options: ResourceDebugLogOptions) {
       },
     })),
     manifests: manifests.map((entry) => ({
-      url: entry.url,
+      url: redactUrl(entry.url),
       canonicalUrl: canonicalUrl(entry.url),
       video: entry.manifest.video.map(debugTrack),
       audio: entry.manifest.audio.map(debugTrack),
@@ -147,7 +186,7 @@ export function buildResourceDebugLog(options: ResourceDebugLogOptions) {
       title: candidate.title,
       type: candidate.type,
       source: candidate.source,
-      pageUrl: candidate.pageUrl,
+      pageUrl: redactUrl(candidate.pageUrl),
       downloadable: candidate.downloadable,
       fragmentCount: candidate.fragmentCount,
       rawResourceIds: candidate.rawResourceIds,

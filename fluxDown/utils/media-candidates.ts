@@ -12,6 +12,7 @@ import {
   isStreamingUrl,
   normalizeUrlForDedup,
 } from "./resource-types";
+import { normalizeDashManifest } from "./dash-manifest";
 
 export type MediaCandidateSource =
   | "direct"
@@ -58,6 +59,8 @@ export interface MediaCandidateOptions {
   pageUrl?: string;
   /** Localized fallback supplied by the caller. */
   fallbackTitle: string;
+  /** Localized label used when multiple candidates share one page title. */
+  videoLabel?: string;
   manifests?: DashManifestEntry[];
 }
 
@@ -118,12 +121,26 @@ function isFragmentUrl(url: string): boolean {
   return ext === "m4s" || ext === "ts";
 }
 
-function isManifestUrl(url: string): boolean {
-  return isStreamingUrl(url) && !isFragmentUrl(url);
+function isManifestUrl(url: string, mimeType?: string): boolean {
+  if (isStreamingUrl(url) && !isFragmentUrl(url)) return true;
+  const mime = mimeType?.toLowerCase().split(";", 1)[0].trim();
+  return mime === "application/vnd.apple.mpegurl" ||
+    mime === "application/x-mpegurl" ||
+    mime === "application/mpegurl" ||
+    mime === "application/octet-stream-m3u8" ||
+    mime === "application/dash+xml";
+}
+
+function isCompleteFragmentResource(resource: DetectedResource): boolean {
+  if (!isFragmentUrl(resource.url)) return false;
+  // A Content-Disposition filename is an explicit complete-file signal. For
+  // unnamed media, a very large response is not a normal MSE fragment.
+  return Boolean(resource.isAttachment || resource.filename?.trim()) || resource.size >= 16 * 1024 * 1024;
 }
 
 function isCompleteVideoResource(resource: DetectedResource): boolean {
-  if (isFragmentUrl(resource.url) || isManifestUrl(resource.url)) return false;
+  if (isFragmentUrl(resource.url) && !isCompleteFragmentResource(resource)) return false;
+  if (isManifestUrl(resource.url, resource.mimeType)) return false;
   if (resource.type === "audio") return false;
   if (resource.type === "video") return true;
   const mime = resource.mimeType?.toLowerCase() || "";
@@ -168,9 +185,10 @@ function urlPathInfo(url: string): UrlPathInfo | null {
  * 子目录；也有 CDN 会在重定向后改变签名参数。目录前缀匹配比“父目录必须
  * 完全相同”更适合这种通用 DASH 结构，但只在同一 origin 内启用。
  */
-function relatedFragmentPath(trackUrl: string, resourceUrl: string): boolean {
-  const track = urlPathInfo(trackUrl);
-  const resource = urlPathInfo(resourceUrl);
+function relatedFragmentPath(
+  track: UrlPathInfo | null,
+  resource: UrlPathInfo | null,
+): boolean {
   if (!track || !resource || track.origin !== resource.origin) return false;
   if (track.directory === "/" || resource.directory === "/") return false;
   return track.directory === resource.directory
@@ -195,10 +213,14 @@ function shortCodec(codecs?: string): string | undefined {
   return codecs.split(".")[0];
 }
 
-function bestAudioUrl(manifest: DashManifest): string | undefined {
-  return manifest.audio.filter((track) => track.downloadable !== false).reduce<string | undefined>((best, track) => {
+function periodKey(track: DashManifest["video"][number]): string {
+  return track.periodId || "__default__";
+}
+
+function bestAudioUrl(audio: DashManifest["audio"]): string | undefined {
+  return audio.filter((track) => track.downloadable !== false).reduce<string | undefined>((best, track) => {
     if (!best) return track.url;
-    const current = manifest.audio.find((item) => item.url === best);
+    const current = audio.find((item) => item.url === best);
     return (track.bandwidth ?? 0) > (current?.bandwidth ?? 0)
       ? track.url
       : best;
@@ -211,6 +233,7 @@ function trackIdentity(
 ): string {
   return [
     kind,
+    track.periodId || "",
     stableMediaPath(track.url),
     track.mimeType?.toLowerCase() || "",
     track.codecs?.toLowerCase() || "",
@@ -232,7 +255,10 @@ export function selectQualityVideoTracks(
     const frameRateKey = track.frameRate && track.frameRate > 0
       ? String(Math.round(track.frameRate))
       : "unknown";
-    const key = `${height}|${frameRateKey}`;
+    const qualityKey = height > 0
+      ? `height:${height}`
+      : `bandwidth:${track.bandwidth ?? 0}`;
+    const key = `${periodKey(track)}|${qualityKey}|${frameRateKey}`;
     const current = selected.get(key);
     if (!current || (track.bandwidth ?? 0) > (current.bandwidth ?? 0)) {
       selected.set(key, track);
@@ -259,6 +285,30 @@ function manifestSignature(manifest: DashManifest): string {
   ].sort().join("\n");
 }
 
+function manifestPeriods(manifest: DashManifest): Array<{
+  key: string;
+  video: DashManifest["video"];
+  audio: DashManifest["audio"];
+}> {
+  const audioByPeriod = new Map<string, DashManifest["audio"]>();
+  for (const track of manifest.audio) {
+    const group = audioByPeriod.get(periodKey(track)) || [];
+    group.push(track);
+    audioByPeriod.set(periodKey(track), group);
+  }
+  const videoByPeriod = new Map<string, DashManifest["video"]>();
+  for (const track of manifest.video) {
+    const group = videoByPeriod.get(periodKey(track)) || [];
+    group.push(track);
+    videoByPeriod.set(periodKey(track), group);
+  }
+  return Array.from(videoByPeriod, ([key, video]) => ({
+    key,
+    video,
+    audio: audioByPeriod.get(key) || [],
+  }));
+}
+
 function relatedManifestResources(
   resources: DetectedResource[],
   manifestUrl: string,
@@ -281,6 +331,7 @@ function relatedManifestResources(
   }
 
   const trackUrls = [...manifest.video, ...manifest.audio].map((track) => track.url);
+  const trackPathInfos = trackUrls.map(urlPathInfo);
   const manifestOrigins = new Set(
     [manifestUrl, ...trackUrls]
       .map((url) => urlPathInfo(url)?.origin)
@@ -296,13 +347,14 @@ function relatedManifestResources(
       ) {
         return false;
       }
+      if (isCompleteFragmentResource(resource)) return false;
       if (
         trackUrlKeys.has(urlKey(resource.url)) ||
         trackPathKeys.has(stableMediaPath(resource.url))
       ) {
         return true;
       }
-      if (!isFragmentUrl(resource.url)) return false;
+      if (!isFragmentUrl(resource.url) || isCompleteFragmentResource(resource)) return false;
 
       const resourceUrls = [resource.url, resource.finalUrl].filter(
         (url): url is string => !!url,
@@ -314,9 +366,11 @@ function relatedManifestResources(
         trackMediaPathKeys.has(mediaPathKey(resourceUrl)))) {
         return true;
       }
-      if (resourceUrls.some((resourceUrl) =>
-        fragmentFamilies.has(fragmentFamilyKey(resourceUrl)) ||
-        trackUrls.some((trackUrl) => relatedFragmentPath(trackUrl, resourceUrl)))) {
+      if (resourceUrls.some((resourceUrl) => {
+        const resourcePathInfo = urlPathInfo(resourceUrl);
+        return fragmentFamilies.has(fragmentFamilyKey(resourceUrl)) ||
+          trackPathInfos.some((trackPathInfo) => relatedFragmentPath(trackPathInfo, resourcePathInfo));
+      })) {
         return true;
       }
 
@@ -373,12 +427,14 @@ export function buildMediaCandidates(
     signature: string;
   }>();
   for (const [manifestIndex, entry] of (options.manifests || []).entries()) {
-    if (!entry?.manifest) continue;
+    const normalizedManifest = normalizeDashManifest(entry?.manifest);
+    if (!entry || !normalizedManifest) continue;
+    const normalizedEntry = { ...entry, manifest: normalizedManifest };
     const manifestKey = entry.url ? urlKey(entry.url) : "__legacy__";
     latestByManifestUrl.set(manifestKey, {
-      entry,
+      entry: normalizedEntry,
       manifestIndex,
-      signature: manifestSignature(entry.manifest),
+      signature: manifestSignature(normalizedManifest),
     });
   }
 
@@ -411,8 +467,6 @@ export function buildMediaCandidates(
     : [];
 
   for (const { entry, manifestIndex, manifestKey } of selectedManifestItems) {
-    seenManifestUrls.add(manifestKey);
-
     const root = entry.url
       ? mediaResources.find((resource) => urlKey(resource.url) === urlKey(entry.url))
       : undefined;
@@ -428,41 +482,54 @@ export function buildMediaCandidates(
         (resource) =>
           !usedResourceIds.has(resource.id),
       );
+    const periodCandidates = manifestPeriods(entry.manifest);
+    const periodRows: MediaCandidate[] = [];
+    for (const [periodIndex, period] of periodCandidates.entries()) {
+      const audioUrl = bestAudioUrl(period.audio);
+      const seenVariantKeys = new Set<string>();
+      const variants = selectQualityVideoTracks(period.video).flatMap((track, trackIndex) => {
+        // Signed URLs can change between two identical manifest responses. Use
+        // the stable track identity for the row key so the same quality is not
+        // shown again just because its CDN signature rotated.
+        const trackKey = trackIdentity(track, "video");
+        if (seenVariantKeys.has(trackKey)) return [];
+        seenVariantKeys.add(trackKey);
+        return [{
+          id: `dash:${manifestIndex}:${period.key}:${track.id ?? trackIndex}:${trackKey}`,
+          label: qualityLabel(track.height, track.bandwidth),
+          videoUrl: track.url,
+          audioUrl,
+          mimeType: track.mimeType,
+          bandwidth: track.bandwidth,
+          codec: shortCodec(track.codecs),
+          frameRate: track.frameRate,
+        }];
+      });
+      if (variants.length === 0) continue;
+      periodRows.push({
+        id: `dash:${manifestKey}:${period.key}`,
+        title: baseTitle,
+        type: "stream",
+        source: "dash",
+        pageUrl: options.pageUrl || root?.pageUrl || "",
+        variants,
+        rawResourceIds: periodIndex === 0
+          ? Array.from(new Set(related.map((resource) => resource.id)))
+          : [],
+        fragmentCount: periodIndex === 0
+          ? related.filter((resource) => isFragmentUrl(resource.url) && !isCompleteFragmentResource(resource)).length
+          : 0,
+        downloadable: true,
+      });
+    }
+
+    // A parsed SegmentTemplate/SegmentList has no complete track URL. Leave the
+    // original manifest resource available so the engine can handle it itself.
+    if (periodRows.length === 0) continue;
+    seenManifestUrls.add(manifestKey);
     for (const resource of related) usedResourceIds.add(resource.id);
     if (root) usedResourceIds.add(root.id);
-
-    const audioUrl = bestAudioUrl(entry.manifest);
-    const seenVariantKeys = new Set<string>();
-    const variants = selectQualityVideoTracks(entry.manifest.video).flatMap((track, trackIndex) => {
-      // Signed URLs can change between two identical manifest responses. Use
-      // the stable track identity for the row key so the same 1080p/360p
-      // variant is not shown again just because its CDN signature rotated.
-      const trackKey = trackIdentity(track, "video");
-      if (seenVariantKeys.has(trackKey)) return [];
-      seenVariantKeys.add(trackKey);
-      return [{
-        id: `dash:${manifestIndex}:${track.id ?? trackIndex}:${trackKey}`,
-        label: qualityLabel(track.height, track.bandwidth),
-        videoUrl: track.url,
-        audioUrl,
-        mimeType: track.mimeType,
-        bandwidth: track.bandwidth,
-        codec: shortCodec(track.codecs),
-        frameRate: track.frameRate,
-      }];
-    });
-
-    candidates.push({
-      id: `dash:${manifestKey}`,
-      title: baseTitle,
-      type: "stream",
-      source: "dash",
-      pageUrl: options.pageUrl || root?.pageUrl || "",
-      variants,
-      rawResourceIds: Array.from(new Set(related.map((resource) => resource.id))),
-      fragmentCount: related.filter((resource) => isFragmentUrl(resource.url)).length,
-      downloadable: variants.length > 0,
-    });
+    candidates.push(...periodRows);
   }
 
   // 被当前页面强关联清单淘汰的预加载媒体仍然是已识别资源，不能掉进
@@ -485,7 +552,9 @@ export function buildMediaCandidates(
       pageUrl: options.pageUrl || related[0]?.pageUrl || "",
       variants: [],
       rawResourceIds: Array.from(new Set(related.map((resource) => resource.id))),
-      fragmentCount: related.filter((resource) => isFragmentUrl(resource.url)).length,
+      fragmentCount: related.filter((resource) =>
+        isFragmentUrl(resource.url) && !isCompleteFragmentResource(resource),
+      ).length,
       downloadable: false,
     });
   }
@@ -494,13 +563,15 @@ export function buildMediaCandidates(
   for (const resource of mediaResources) {
     if (
       usedResourceIds.has(resource.id) ||
-      !isManifestUrl(resource.url) ||
+      !isManifestUrl(resource.url, resource.mimeType) ||
       seenManifestUrls.has(urlKey(resource.url))
     ) {
       continue;
     }
     usedResourceIds.add(resource.id);
-    const source: MediaCandidateSource = extractExtension(resource.url) === "m3u8"
+    const mime = resource.mimeType?.toLowerCase() || "";
+    const source: MediaCandidateSource = extractExtension(resource.url) === "m3u8" ||
+      mime.includes("mpegurl")
       ? "hls"
       : "dash";
     candidates.push({
@@ -549,7 +620,7 @@ export function buildMediaCandidates(
   // audio/m4s/ts requests do not reappear as ordinary resource rows.
   const orphanGroups = new Map<string, DetectedResource[]>();
   for (const resource of mediaResources) {
-    if (usedResourceIds.has(resource.id) || !isFragmentUrl(resource.url)) continue;
+    if (usedResourceIds.has(resource.id) || !isFragmentUrl(resource.url) || isCompleteFragmentResource(resource)) continue;
     const key = fragmentFamilyKey(resource.url);
     const group = orphanGroups.get(key) || [];
     group.push(resource);
@@ -570,7 +641,22 @@ export function buildMediaCandidates(
     });
   }
 
-  return candidates;
+  const downloadableTitles = new Map<string, number>();
+  for (const candidate of candidates) {
+    if (candidate.downloadable) {
+      downloadableTitles.set(candidate.title, (downloadableTitles.get(candidate.title) || 0) + 1);
+    }
+  }
+  const seenTitles = new Map<string, number>();
+  return candidates.map((candidate) => {
+    if (!candidate.downloadable || (downloadableTitles.get(candidate.title) || 0) < 2) {
+      return candidate;
+    }
+    const occurrence = (seenTitles.get(candidate.title) || 0) + 1;
+    seenTitles.set(candidate.title, occurrence);
+    const label = options.videoLabel || "Video";
+    return { ...candidate, title: `${candidate.title} · ${label} ${occurrence}` };
+  });
 }
 
 function safeFilenamePart(value: string): string {

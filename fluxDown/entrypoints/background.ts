@@ -59,6 +59,7 @@ import {
   normalizeUrlForDedup,
 } from "@/utils/resource-types";
 import type { ResourceMessagePayload } from "@/utils/resource-types";
+import { normalizeDashManifest } from "@/utils/dash-manifest";
 import type { DashManifest } from "@/utils/dash-manifest";
 import {
   buildMediaCandidates,
@@ -224,12 +225,46 @@ export default defineBackground(() => {
   // 一个有界集合，由 UI 再投影为多个视频候选。
   const tabDashManifests = new Map<number, Map<string, DashManifest>>();
   const MAX_DASH_MANIFESTS_PER_TAB = 8;
+  const tabPageUrls = new Map<number, string>();
+  const tabResourceVersions = new Map<number, number>();
+  const tabManifestVersions = new Map<number, number>();
+  const tabCandidateCache = new Map<number, {
+    resourceVersion: number;
+    manifestVersion: number;
+    candidates: ReturnType<typeof buildMediaCandidates>;
+  }>();
 
-  /**
-   * 计算资源面板实际展示的行数：媒体按候选/清晰度聚合，已被候选代表的
-   * 原始视频、音频和分片不重复计数；非媒体资源各占一行。
-   */
-  function displayedResourceCount(tabId: number): number {
+  function bumpTabVersion(versions: Map<number, number>, tabId: number): void {
+    versions.set(tabId, (versions.get(tabId) || 0) + 1);
+    tabCandidateCache.delete(tabId);
+  }
+
+  function clearTabProjection(tabId: number): void {
+    tabDashManifests.delete(tabId);
+    clearResourcesForTab(tabId);
+    bumpTabVersion(tabResourceVersions, tabId);
+    bumpTabVersion(tabManifestVersions, tabId);
+  }
+
+  /** Also catches history.pushState navigations reported by content scripts. */
+  function syncTabPageUrl(tabId: number, pageUrl: string): void {
+    if (!pageUrl) return;
+    const previous = tabPageUrls.get(tabId);
+    if (previous && previous !== pageUrl) clearTabProjection(tabId);
+    tabPageUrls.set(tabId, pageUrl);
+  }
+
+  function tabCandidates(tabId: number): ReturnType<typeof buildMediaCandidates> {
+    const resourceVersion = tabResourceVersions.get(tabId) || 0;
+    const manifestVersion = tabManifestVersions.get(tabId) || 0;
+    const cached = tabCandidateCache.get(tabId);
+    if (
+      cached &&
+      cached.resourceVersion === resourceVersion &&
+      cached.manifestVersion === manifestVersion
+    ) {
+      return cached.candidates;
+    }
     const resources = getResourcesForTab(tabId);
     const stored = tabDashManifests.get(tabId);
     const manifests = stored
@@ -240,6 +275,17 @@ export default defineBackground(() => {
       pageUrl: resources.find((resource) => resource.pageUrl)?.pageUrl,
       manifests,
     });
+    tabCandidateCache.set(tabId, { resourceVersion, manifestVersion, candidates });
+    return candidates;
+  }
+
+  /**
+   * 计算资源面板实际展示的行数：媒体按候选/清晰度聚合，已被候选代表的
+   * 原始视频、音频和分片不重复计数；非媒体资源各占一行。
+   */
+  function displayedResourceCount(tabId: number): number {
+    const resources = getResourcesForTab(tabId);
+    const candidates = tabCandidates(tabId);
     const representedIds = new Set(
       candidates.flatMap((candidate) => candidate.rawResourceIds),
     );
@@ -252,16 +298,51 @@ export default defineBackground(() => {
     return countMediaCandidateRows(candidates) + rawCount;
   }
 
+  const pendingBadgeUpdates = new Map<number, {
+    timer: ReturnType<typeof setTimeout>;
+    waiters: Array<() => void>;
+  }>();
+
   function updateDisplayedBadgeForTab(tabId: number): Promise<void> {
-    return updateBadgeForTab(tabId, displayedResourceCount(tabId));
+    return new Promise((resolve) => {
+      const pending = pendingBadgeUpdates.get(tabId);
+      if (pending) {
+        pending.waiters.push(resolve);
+        return;
+      }
+      const timer = setTimeout(() => {
+        const current = pendingBadgeUpdates.get(tabId);
+        pendingBadgeUpdates.delete(tabId);
+        try {
+          void updateBadgeForTab(tabId, displayedResourceCount(tabId)).catch((error) => {
+            console.warn("[FluxDown] failed to update displayed badge:", error);
+          });
+        } catch (error) {
+          console.warn("[FluxDown] failed to compute displayed badge count:", error);
+        }
+        for (const waiter of current?.waiters || [resolve]) waiter();
+      }, 50);
+      pendingBadgeUpdates.set(tabId, { timer, waiters: [resolve] });
+    });
   }
 
   browser.tabs.onRemoved.addListener((tabId) => {
     tabDashManifests.delete(tabId);
+    tabPageUrls.delete(tabId);
+    tabResourceVersions.delete(tabId);
+    tabManifestVersions.delete(tabId);
+    tabCandidateCache.delete(tabId);
+    const pending = pendingBadgeUpdates.get(tabId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      pendingBadgeUpdates.delete(tabId);
+      for (const resolve of pending.waiters) resolve();
+    }
   });
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status === "loading" && changeInfo.url) {
-      tabDashManifests.delete(tabId);
+    if (changeInfo.url) {
+      clearTabProjection(tabId);
+      tabPageUrls.set(tabId, changeInfo.url);
     }
   });
 
@@ -751,6 +832,7 @@ export default defineBackground(() => {
             mainHeaders,
           );
           if (added > 0) {
+            bumpTabVersion(tabResourceVersions, details.tabId);
             updateDisplayedBadgeForTab(details.tabId);
             notifyContentScript(details.tabId);
           }
@@ -844,6 +926,7 @@ export default defineBackground(() => {
 
         if (added > 0) {
           // 更新 Badge
+          bumpTabVersion(tabResourceVersions, details.tabId);
           updateDisplayedBadgeForTab(details.tabId);
           // 推送给 Content Script UI
           notifyContentScript(details.tabId);
@@ -882,11 +965,9 @@ export default defineBackground(() => {
    */
   async function notifyDashManifest(tabId: number): Promise<void> {
     const stored = tabDashManifests.get(tabId);
-    if (!stored || stored.size === 0) return;
-    const dashManifests = Array.from(stored.entries()).map(([url, manifest]) => ({
-      url,
-      manifest,
-    }));
+    const dashManifests = stored
+      ? Array.from(stored.entries()).map(([url, manifest]) => ({ url, manifest }))
+      : [];
     try {
       await browser.tabs.sendMessage(tabId, {
         action: "dashManifestUpdated",
@@ -2782,6 +2863,14 @@ export default defineBackground(() => {
     return Object.keys(merged).length > 0 ? merged : undefined;
   }
 
+  function sameOrigin(firstUrl: string, secondUrl: string): boolean {
+    try {
+      return new URL(firstUrl).origin === new URL(secondUrl).origin;
+    } catch {
+      return false;
+    }
+  }
+
   async function handleMessage(
     message: any,
     sender: chrome.runtime.MessageSender,
@@ -2894,6 +2983,8 @@ export default defineBackground(() => {
 
         const pageUrl = sender.tab?.url || sender.url || "";
         const payloads: ResourceMessagePayload[] = message.resources || [];
+        const reportedPageUrl = payloads.find((payload) => payload.pageUrl)?.pageUrl || pageUrl;
+        syncTabPageUrl(tabId, reportedPageUrl);
 
         if (payloads.length === 0) return { success: true, added: 0 };
 
@@ -2901,12 +2992,24 @@ export default defineBackground(() => {
         const rdSettings = await getCachedSettings();
         if (!rdSettings.resourceSniffing) return { success: true, added: 0 };
 
-        const added = addResources(tabId, pageUrl, payloads);
+        const added = addResources(tabId, reportedPageUrl, payloads);
         if (added > 0) {
+          bumpTabVersion(tabResourceVersions, tabId);
           await updateDisplayedBadgeForTab(tabId);
           await notifyContentScript(tabId);
         }
         return { success: true, added };
+      }
+
+      case "pageUrlChanged": {
+        const tabId = sender.tab?.id;
+        const pageUrl = typeof message.pageUrl === "string" ? message.pageUrl : "";
+        if (!tabId || tabId < 0 || !pageUrl) return { success: false };
+        syncTabPageUrl(tabId, pageUrl);
+        await updateDisplayedBadgeForTab(tabId);
+        await notifyContentScript(tabId);
+        await notifyDashManifest(tabId);
+        return { success: true };
       }
 
       // --- Content Script: DASH manifest 检测上报（权威清晰度 + 轨道 URL）---
@@ -2917,10 +3020,11 @@ export default defineBackground(() => {
         // 资源嗅探开关：关闭时丢弃（旧页面的 fetch 拦截脚本可能仍在运行）
         const dmSettings = await getCachedSettings();
         if (!dmSettings.resourceSniffing) return { success: false };
-        const manifest = message.manifest as DashManifest | undefined;
-        if (!manifest || (!manifest.video?.length && !manifest.audio?.length)) {
+        const manifest = normalizeDashManifest(message.manifest);
+        if (!manifest) {
           return { success: false };
         }
+        syncTabPageUrl(tabId, typeof message.pageUrl === "string" ? message.pageUrl : sender.tab?.url || "");
         const manifestUrl =
           typeof message.manifestUrl === "string" && message.manifestUrl
             ? normalizeUrlForDedup(message.manifestUrl)
@@ -2937,6 +3041,7 @@ export default defineBackground(() => {
           if (typeof oldest !== "string") break;
           stored.delete(oldest);
         }
+        bumpTabVersion(tabManifestVersions, tabId);
         await updateDisplayedBadgeForTab(tabId);
         await notifyDashManifest(tabId);
         return { success: true };
@@ -2986,6 +3091,7 @@ export default defineBackground(() => {
           const matched = findStoredResource(tabRes, url);
           const audioMatched =
             typeof message.audioUrl === "string" && message.audioUrl
+              && sameOrigin(url, message.audioUrl)
               ? findStoredResource(tabRes, message.audioUrl)
               : undefined;
           resCookies = matched?.cookies || audioMatched?.cookies;
@@ -3133,6 +3239,7 @@ export default defineBackground(() => {
             if (!cookieString || Object.keys(extraHeaders).length === 0) {
               const matchedRes = findStoredResource(batchTabResources, item.url);
               const audioMatchedRes = item.audioUrl
+                && sameOrigin(item.url, item.audioUrl)
                 ? findStoredResource(batchTabResources, item.audioUrl)
                 : undefined;
               if (!cookieString) {
@@ -3158,43 +3265,10 @@ export default defineBackground(() => {
           }),
         );
 
-        // 批量 API 的多 URL 语义无法表达 audioUrl；带音频轨的候选改走单条
-        // DownloadRequest，确保本地 NMH 和远程 HTTP 都保留音视频 mux 语义。
-        const trackItems = batchItems.filter((item) => item.audioUrl);
-        const plainItems = batchItems.filter((item) => !item.audioUrl);
-        let response: { success: boolean; message?: string; channel?: "local" | "remote" };
-        if (trackItems.length > 0) {
-          const trackResponses = await Promise.all(
-            trackItems.map((item) =>
-              sendDownloadRequest({
-                url: item.url,
-                filename: item.filename || "",
-                referrer: item.referrer || "",
-                cookies: item.cookies,
-                headers: item.headers,
-                fileSize: item.fileSize,
-                mimeType: item.mimeType,
-                method: item.method,
-                body: item.body,
-                audioUrl: item.audioUrl,
-              }),
-            ),
-          );
-          const plainResponse = plainItems.length > 0
-            ? await sendBatchDownloadRequest(plainItems)
-            : undefined;
-          const succeeded = trackResponses.filter((item) => item.success).length
-            + (plainResponse?.success ? plainItems.length : 0);
-          const firstFailure = trackResponses.find((item) => !item.success)?.message
-            || (!plainResponse?.success ? plainResponse?.message : undefined);
-          response = {
-            success: succeeded === items.length,
-            message: firstFailure,
-            channel: trackResponses[0]?.channel || plainResponse?.channel,
-          };
-        } else {
-          response = await sendBatchDownloadRequest(batchItems);
-        }
+        // NMH 的 batch_download 条目与 DownloadRequest 同构并支持 audioUrl。
+        // 只有远程旧版 /download/batch 不支持该字段，路由层才将带音频条目
+        // 降级为远程单条请求；本地批量始终保持一次往返。
+        const response = await sendBatchDownloadRequest(batchItems);
         const batchNotifyOk = await shouldNotifyChannel(response.channel);
         if (response.success) {
           await incrementStat("sent");

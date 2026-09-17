@@ -12,8 +12,8 @@
 
 import { browser } from 'wxt/browser';
 import { defineContentScript } from 'wxt/utils/define-content-script';
-import type { DetectedResource, ResourceType, ConfidenceLevel } from '@/utils/resource-types';
-import { formatFileSize } from '@/utils/resource-types';
+import type { DetectedResource, ResourceType, ConfidenceLevel, TrackPairGroup } from '@/utils/resource-types';
+import { formatFileSize, groupTrackPairs } from '@/utils/resource-types';
 import type { DashManifest } from '@/utils/dash-manifest';
 import { detectTrackKind } from '@/utils/track-detector';
 import type { DashManifestEntry, MediaCandidate, MediaCandidateVariant } from '@/utils/media-candidates';
@@ -92,6 +92,9 @@ export default defineContentScript({
 
     /* ========== 状态 ========== */
     let resources: DetectedResource[] = [];
+    let resourceVersion = 0;
+    let manifestVersion = 0;
+    let candidateCache: { resourceVersion: number; manifestVersion: number; candidates: MediaCandidate[] } | null = null;
     let activeTab: string = 'all';
     const selectedIds = new Set<string>();
     interface ContentResourceRow {
@@ -132,7 +135,7 @@ export default defineContentScript({
     let batchCountEl: HTMLElement;
     let batchBtnEl: HTMLButtonElement;
     let clearFailedBtnEl: HTMLButtonElement;
-    let exportDebugBtnEl: HTMLButtonElement;
+    let exportDebugBtnEl: HTMLButtonElement | undefined;
     let selectAllText: Text;
     let floatBtnEl: HTMLElement;
     let qualityPickerEl: HTMLElement;
@@ -152,15 +155,11 @@ export default defineContentScript({
 
     /** 从页面内资源面板直接导出当前嗅探/聚合快照。 */
     function exportResourceDebugLog(): void {
+      if (!import.meta.env.DEV) return;
       const log = buildResourceDebugLog({
         resources,
         manifests: dashManifests,
-        candidates: buildMediaCandidates(resources, {
-          pageTitle: document.title,
-          pageUrl: location.href,
-          fallbackTitle: t('panel.videoCandidate'),
-          manifests: dashManifests,
-        }),
+        candidates: mediaCandidatesSnapshot(),
         tabId: undefined,
         pageUrl: location.href,
         pageTitle: document.title,
@@ -174,13 +173,13 @@ export default defineContentScript({
         anchor.href = blobUrl;
         anchor.download = resourceDebugFilename();
         anchor.click();
-        exportDebugBtnEl.textContent = t('panel.exportDebugLogDone');
+        if (exportDebugBtnEl) exportDebugBtnEl.textContent = t('panel.exportDebugLogDone');
       } catch {
-        exportDebugBtnEl.textContent = t('panel.exportDebugLogFailed');
+        if (exportDebugBtnEl) exportDebugBtnEl.textContent = t('panel.exportDebugLogFailed');
       } finally {
         window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
         window.setTimeout(() => {
-          exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+          if (exportDebugBtnEl) exportDebugBtnEl.textContent = t('panel.exportDebugLog');
         }, 2_000);
       }
     }
@@ -235,18 +234,22 @@ export default defineContentScript({
       if (!sniffEnabled) return;
       if (msg.action === 'resourcesUpdated' && Array.isArray(msg.resources)) {
         resources = msg.resources;
+        resourceVersion += 1;
+        candidateCache = null;
         render();
       }
       if (msg.action === 'toggleResourcePanel') {
         togglePanel();
       }
-      if (msg.action === 'dashManifestUpdated' && msg.manifest) {
-        dashManifest = msg.manifest;
+      if (msg.action === 'dashManifestUpdated') {
+        dashManifest = msg.manifest || null;
         dashManifests = Array.isArray(msg.dashManifests)
           ? msg.dashManifests
           : dashManifest
             ? [{ url: '', manifest: dashManifest }]
             : [];
+        manifestVersion += 1;
+        candidateCache = null;
         render();
       }
     });
@@ -276,12 +279,14 @@ export default defineContentScript({
         const resp = await browser.runtime.sendMessage({ action: 'getResources' });
         if (Array.isArray(resp?.resources)) {
           resources = resp.resources;
+          resourceVersion += 1;
         }
         if (resp?.dashManifest) {
           dashManifest = resp.dashManifest;
         }
         if (Array.isArray(resp?.dashManifests)) {
           dashManifests = resp.dashManifests;
+          manifestVersion += 1;
         } else if (dashManifest) {
           dashManifests = [{ url: '', manifest: dashManifest }];
         }
@@ -465,14 +470,16 @@ export default defineContentScript({
 
       const headerActions = h('div', 'panel-header-actions');
 
-      exportDebugBtnEl = document.createElement('button');
-      exportDebugBtnEl.className = 'export-debug-btn';
-      exportDebugBtnEl.type = 'button';
-      exportDebugBtnEl.textContent = t('panel.exportDebugLog');
-      exportDebugBtnEl.title = t('panel.exportDebugLogTitle');
-      exportDebugBtnEl.setAttribute('aria-label', t('panel.exportDebugLog'));
-      exportDebugBtnEl.addEventListener('click', exportResourceDebugLog);
-      headerActions.appendChild(exportDebugBtnEl);
+      if (import.meta.env.DEV) {
+        exportDebugBtnEl = document.createElement('button');
+        exportDebugBtnEl.className = 'export-debug-btn';
+        exportDebugBtnEl.type = 'button';
+        exportDebugBtnEl.textContent = t('panel.exportDebugLog');
+        exportDebugBtnEl.title = t('panel.exportDebugLogTitle');
+        exportDebugBtnEl.setAttribute('aria-label', t('panel.exportDebugLog'));
+        exportDebugBtnEl.addEventListener('click', exportResourceDebugLog);
+        headerActions.appendChild(exportDebugBtnEl);
+      }
 
       const hideBtn = h('button', 'btn-close');
       hideBtn.title = t('panel.hideDot');
@@ -521,9 +528,13 @@ export default defineContentScript({
 
         // 一次性发送所有选中资源给 Background，由 Background 端顺序执行
         // 避免循环 sendMessage 导致 Chrome MV3 消息通道串行阻塞，只有第一个被处理
-        browser.runtime.sendMessage({
+        void browser.runtime.sendMessage({
           action: 'batchDownload',
           items,
+        }).then((response: { success?: boolean; message?: string } | undefined) => {
+          if (!response?.success) console.warn('[FluxDown UI] batch download failed:', response?.message);
+        }).catch(() => {
+          console.warn('[FluxDown UI] batch download message failed');
         });
         selectedIds.clear();
         renderList();
@@ -607,14 +618,15 @@ export default defineContentScript({
 
         // blob/MSE 视频（B站/迅雷等）无直链 → 优先用页面拦到的权威 DASH manifest
         // 构造真清晰度档（height/bandwidth 来自 manifest，可信）；manifest 缺失时
-        // 不把嗅探到的单个分片伪装成可下载视频，改为打开候选面板提示用户。
+          // 清单缺失时仍保留原有分片聚合兜底，避免 document_idle 注入竞态
+          // 让浮标从“有行可点”退化为空白面板。
         // 存在音视频轨对或多档清晰度 → 弹出清晰度选择小窗；只有一条无音频的单轨
         // → 直接下载；两者都拿不到（未嗅探到媒体）→ 回退打开资源面板。
         const media = mediaResources();
         const options =
           dashManifest && dashManifest.video.length > 0
             ? qualityOptionsFromManifest(dashManifest)
-            : [];
+            : qualityOptionsFromTrackGroups(groupTrackPairs(media));
         const needsPicker =
           options.length > 1 || options.some((o) => o.audioUrl);
         if (needsPicker) {
@@ -883,6 +895,8 @@ export default defineContentScript({
         filename: candidateFilename(candidate, variant),
         fileSize: variant.fileSize,
         mimeType: variant.mimeType,
+      }).then((response: { success?: boolean } | undefined) => {
+        if (!response?.success && button) button.disabled = false;
       }).catch(() => {
         if (button) button.disabled = false;
       });
@@ -980,9 +994,11 @@ export default defineContentScript({
         void browser.runtime.sendMessage({
           action: 'downloadResource',
           url: r.url, referrer: r.pageUrl || location.href,
-          filename: name,
+          filename: r.filename,
           fileSize: r.size > 0 ? r.size : undefined,
           mimeType: r.mimeType,
+        }).then((response: { success?: boolean } | undefined) => {
+          if (!response?.success) dl.disabled = false;
         }).catch(() => {
           dl.disabled = false;
         });
@@ -1005,6 +1021,7 @@ export default defineContentScript({
 
     /** 语言切换时刷新静态文本（全选 label、批量下载按钮） */
     function refreshStaticTexts(): void {
+      candidateCache = null;
       if (selectAllText) selectAllText.textContent = ` ${t('panel.selectAll')}`;
       if (exportDebugBtnEl) {
         exportDebugBtnEl.textContent = t('panel.exportDebugLog');
@@ -1024,26 +1041,35 @@ export default defineContentScript({
 
     function mediaCandidatesForTab(tab: string): MediaCandidate[] {
       if (tab !== 'all' && tab !== 'video' && tab !== 'stream') return [];
-      const candidates = buildMediaCandidates(resources, {
-        pageTitle: document.title,
-        pageUrl: location.href,
-        fallbackTitle: t('panel.videoCandidate'),
-        manifests: dashManifests,
-      });
+      const candidates = mediaCandidatesSnapshot();
       return candidates.filter(
         (candidate) => candidate.downloadable && (tab === 'all' || candidate.type === tab),
       );
     }
 
+    function mediaCandidatesSnapshot(): MediaCandidate[] {
+      if (
+        candidateCache &&
+        candidateCache.resourceVersion === resourceVersion &&
+        candidateCache.manifestVersion === manifestVersion
+      ) {
+        return candidateCache.candidates;
+      }
+      const candidates = buildMediaCandidates(resources, {
+        pageTitle: document.title,
+        pageUrl: location.href,
+        fallbackTitle: t('panel.videoCandidate'),
+        videoLabel: t('panel.videoIndex'),
+        manifests: dashManifests,
+      });
+      candidateCache = { resourceVersion, manifestVersion, candidates };
+      return candidates;
+    }
+
     /** DASH 候选已经代表的原始轨道不再作为独立音频/视频资源重复展示。 */
     function aggregatedMediaResourceIds(): Set<string> {
       return new Set(
-        buildMediaCandidates(resources, {
-          pageTitle: document.title,
-          pageUrl: location.href,
-          fallbackTitle: t('panel.videoCandidate'),
-          manifests: dashManifests,
-        }).flatMap((candidate) => candidate.rawResourceIds),
+        mediaCandidatesSnapshot().flatMap((candidate) => candidate.rawResourceIds),
       );
     }
 
@@ -1104,7 +1130,7 @@ export default defineContentScript({
           items.push({
             url: row.item.url,
             referrer: row.item.pageUrl || location.href,
-            filename: row.item.filename || tryDecodeUrl(row.item.url) || row.item.url,
+            filename: row.item.filename,
             fileSize: row.item.size > 0 ? row.item.size : undefined,
             mimeType: row.item.mimeType,
           });
@@ -1162,9 +1188,6 @@ export default defineContentScript({
 
     /** 由权威 DASH manifest 构造清晰度选项：真清晰度（height/bandwidth），配对码率最高的音频轨。 */
     function qualityOptionsFromManifest(manifest: DashManifest): QualityOption[] {
-      const bestAudio = manifest.audio.length > 0
-        ? manifest.audio.reduce((best, cur) => ((cur.bandwidth ?? 0) > (best.bandwidth ?? 0) ? cur : best))
-        : undefined;
       const filenameCandidate: MediaCandidate = {
         id: 'float-manifest',
         title: document.title || t('panel.videoCandidate'),
@@ -1176,11 +1199,14 @@ export default defineContentScript({
         fragmentCount: 0,
         downloadable: true,
       };
-      const kindLabel = bestAudio
-        ? `${t('panel.trackVideo')} + ${t('panel.trackAudio')}`
-        : t('panel.trackVideo');
-
       return selectQualityVideoTracks(manifest.video).map((v) => {
+        const bestAudio = manifest.audio
+          .filter((audio) => audio.downloadable !== false && (audio.periodId || '__default__') === (v.periodId || '__default__'))
+          .reduce<DashManifest['audio'][number] | undefined>((best, cur) =>
+            !best || (cur.bandwidth ?? 0) > (best.bandwidth ?? 0) ? cur : best, undefined);
+        const kindLabel = bestAudio
+          ? `${t('panel.trackVideo')} + ${t('panel.trackAudio')}`
+          : t('panel.trackVideo');
         const rawQuality = v.height
           ? `${v.height}p`
           : v.bandwidth
@@ -1208,6 +1234,37 @@ export default defineContentScript({
           fileSize: undefined,
         };
       });
+    }
+
+    function qualityOptionsFromTrackGroups(groups: TrackPairGroup[]): QualityOption[] {
+      const filenameCandidate: MediaCandidate = {
+        id: 'float-fragments',
+        title: document.title || t('panel.videoCandidate'),
+        type: 'stream',
+        source: 'fragments',
+        pageUrl: location.href,
+        variants: [],
+        rawResourceIds: [],
+        fragmentCount: 0,
+        downloadable: true,
+      };
+      return groups.map((group, index) => ({
+        quality: group.quality || `${t('panel.videoIndex')} ${index + 1}`,
+        videoUrl: group.videoUrl,
+        audioUrl: group.audioUrl,
+        sizeLabel: group.videoRes.size > 0 ? formatFileSize(group.videoRes.size) : '',
+        kindLabel: group.audioUrl
+          ? `${t('panel.trackVideo')} + ${t('panel.trackAudio')}`
+          : t('panel.trackVideo'),
+        filename: candidateFilename(filenameCandidate, {
+          id: `float-fragment:${index}`,
+          label: group.quality,
+          videoUrl: group.videoUrl,
+          audioUrl: group.audioUrl,
+        }),
+        mimeType: group.videoRes.mimeType,
+        fileSize: group.videoRes.size > 0 ? group.videoRes.size : undefined,
+      }));
     }
 
     function buildQualityPicker(root: HTMLElement): void {

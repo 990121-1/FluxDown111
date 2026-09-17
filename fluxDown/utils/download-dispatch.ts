@@ -143,6 +143,31 @@ export async function sendDownloadRequest(
   }
 }
 
+/** The legacy HTTP batch endpoint joins URLs and cannot carry audioUrl. */
+async function remoteSendBatchPreservingAudio(
+  items: BatchDownloadItem[],
+  cfg: RemoteServerConfig,
+): Promise<ApiResponse> {
+  if (!items.some((item) => item.audioUrl)) {
+    return remoteSendBatchDownloadRequest(items, cfg);
+  }
+  const trackResults = await Promise.all(
+    items
+      .filter((item) => item.audioUrl)
+      .map((item) => remoteSendDownloadRequest(item, cfg)),
+  );
+  const plainItems = items.filter((item) => !item.audioUrl);
+  const plainResult = plainItems.length > 0
+    ? [await remoteSendBatchDownloadRequest(plainItems, cfg)]
+    : [];
+  const results = [...trackResults, ...plainResult];
+  const failure = results.find((result) => !result.success);
+  return {
+    success: !failure,
+    message: failure?.message,
+  };
+}
+
 export async function sendBatchDownloadRequest(
   items: BatchDownloadItem[],
 ): Promise<ApiResponse> {
@@ -154,7 +179,7 @@ export async function sendBatchDownloadRequest(
   }
   if (mode === "always") {
     return stamp(
-      await remoteSendBatchDownloadRequest(items, cfg.remote),
+      await remoteSendBatchPreservingAudio(items, cfg.remote),
       "remote",
     );
   }
@@ -165,12 +190,12 @@ export async function sendBatchDownloadRequest(
       return stamp(result, "local");
     }
     return stamp(
-      await remoteSendBatchDownloadRequest(items, cfg.remote),
+      await remoteSendBatchPreservingAudio(items, cfg.remote),
       "remote",
     );
   } catch {
     return stamp(
-      await remoteSendBatchDownloadRequest(items, cfg.remote),
+      await remoteSendBatchPreservingAudio(items, cfg.remote),
       "remote",
     );
   }

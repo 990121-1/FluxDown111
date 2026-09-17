@@ -4,6 +4,7 @@ import {
   countMediaCandidateRows,
   selectQualityVideoTracks,
 } from "./media-candidates";
+import { parseDashXml } from "./dash-manifest";
 import type { DashManifest } from "./dash-manifest";
 import type { DetectedResource } from "./resource-types";
 
@@ -103,6 +104,129 @@ describe("buildMediaCandidates", () => {
       "1080-h264",
       "1080-60",
       "720",
+    ]);
+  });
+
+  test("无 height 时按 bandwidth 保留不同清晰度档", () => {
+    const selected = selectQualityVideoTracks([
+      {
+        id: "5m",
+        url: "https://cdn.example.com/5m.m4s",
+        bandwidth: 5_000_000,
+      },
+      {
+        id: "2m",
+        url: "https://cdn.example.com/2m.m4s",
+        bandwidth: 2_000_000,
+      },
+      {
+        id: "500k",
+        url: "https://cdn.example.com/500k.m4s",
+        bandwidth: 500_000,
+      },
+    ]);
+
+    expect(selected.map((track) => track.id)).toEqual(["5m", "2m", "500k"]);
+  });
+
+  test("多个 Period 只在同一 Period 内配对音频", () => {
+    const periodManifest = parseDashXml(`
+      <MPD>
+        <Period id="main">
+          <AdaptationSet mimeType="video/mp4">
+            <Representation id="main-1080" bandwidth="5000000" height="1080">
+              <BaseURL>https://cdn.example.com/main/1080.m4s</BaseURL>
+            </Representation>
+          </AdaptationSet>
+          <AdaptationSet mimeType="audio/mp4">
+            <Representation id="main-audio" bandwidth="128000">
+              <BaseURL>https://cdn.example.com/main/audio.m4s</BaseURL>
+            </Representation>
+          </AdaptationSet>
+        </Period>
+        <Period id="ad">
+          <AdaptationSet mimeType="video/mp4">
+            <Representation id="ad-720" bandwidth="2000000" height="720">
+              <BaseURL>https://cdn.example.com/ad/720.m4s</BaseURL>
+            </Representation>
+          </AdaptationSet>
+          <AdaptationSet mimeType="audio/mp4">
+            <Representation id="ad-audio" bandwidth="320000">
+              <BaseURL>https://cdn.example.com/ad/audio.m4s</BaseURL>
+            </Representation>
+          </AdaptationSet>
+        </Period>
+      </MPD>
+    `, PAGE_URL);
+    if (!periodManifest) throw new Error("expected a valid multi-Period MPD");
+
+    const candidates = buildMediaCandidates([], {
+      fallbackTitle: "Video",
+      videoLabel: "Video",
+      manifests: [{ url: "https://cdn.example.com/play/manifest.mpd", manifest: periodManifest }],
+    });
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0].variants[0].audioUrl).toBe("https://cdn.example.com/main/audio.m4s");
+    expect(candidates[1].variants[0].audioUrl).toBe("https://cdn.example.com/ad/audio.m4s");
+    expect(candidates.map((candidate) => candidate.title)).toEqual([
+      "Video · Video 1",
+      "Video · Video 2",
+    ]);
+  });
+
+  test("SegmentTemplate 没有可下载轨道时回退到原始 MPD auto 候选", () => {
+    const resources = [resource({
+      id: "template-mpd",
+      url: "https://cdn.example.com/video/manifest.mpd",
+      type: "stream",
+      mimeType: "application/dash+xml",
+    })];
+    const templateManifest: DashManifest = {
+      video: [{
+        id: "template-video",
+        url: "https://cdn.example.com/video/manifest.mpd",
+        height: 1080,
+        bandwidth: 5_000_000,
+        downloadable: false,
+      }],
+      audio: [{
+        id: "template-audio",
+        url: "https://cdn.example.com/video/manifest.mpd",
+        bandwidth: 128_000,
+        downloadable: false,
+      }],
+    };
+
+    const candidates = buildMediaCandidates(resources, {
+      fallbackTitle: "Video",
+      manifests: [{ url: resources[0].url, manifest: templateManifest }],
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].source).toBe("dash");
+    expect(candidates[0].variants[0]).toMatchObject({
+      label: "auto",
+      videoUrl: resources[0].url,
+      resourceId: "template-mpd",
+    });
+  });
+
+  test("同标题的多个清单候选使用稳定的序号消歧", () => {
+    const candidates = buildMediaCandidates([], {
+      pageTitle: "第二个视频 BV2",
+      fallbackTitle: "Video",
+      videoLabel: "Video",
+      manifests: [
+        { url: "https://cdn.example.com/one/manifest.mpd", manifest: manifest("one", "one", "one") },
+        { url: "https://cdn.example.com/two/manifest.mpd", manifest: manifest("two", "two", "two") },
+      ],
+    });
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((candidate) => candidate.title)).toEqual([
+      "第二个视频 BV2 · Video 1",
+      "第二个视频 BV2 · Video 2",
     ]);
   });
 

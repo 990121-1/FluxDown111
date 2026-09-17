@@ -18,7 +18,7 @@ import type {
   FetchInterceptDetail,
   ResourceType,
 } from "@/utils/resource-types";
-import { parseDashManifestText } from "@/utils/dash-manifest";
+import { normalizeDashManifest, parseDashManifestText } from "@/utils/dash-manifest";
 import type { DashManifest } from "@/utils/dash-manifest";
 import { classifyByExtension, classifyByMime } from "@/utils/resource-types";
 
@@ -61,6 +61,22 @@ export default defineContentScript({
     const reportedUrls = new Set<string>();
     let inlineDashSignature = "";
     let inlineDashScanTimer: number | undefined;
+    const scannedInlineScripts = new WeakSet<HTMLScriptElement>();
+
+    function reportPageUrlChange(): void {
+      browser.runtime.sendMessage({
+        action: "pageUrlChanged",
+        pageUrl: location.href,
+      }).catch(() => {
+        // 扩展可能已失效
+      });
+    }
+
+    const handlePageUrlChange = (): void => reportPageUrlChange();
+    document.addEventListener("fluxdown-page-url-changed", handlePageUrlChange);
+    ctx.onInvalidated(() => {
+      document.removeEventListener("fluxdown-page-url-changed", handlePageUrlChange);
+    });
 
     /**
      * 补扫页面已经存在的内嵌 JSON 状态。
@@ -71,6 +87,8 @@ export default defineContentScript({
       if (!sniffingEnabled) return;
 
       for (const script of Array.from(document.scripts)) {
+        if (scannedInlineScripts.has(script)) continue;
+        scannedInlineScripts.add(script);
         const text = script.textContent || "";
         if (!text) continue;
         const manifest = parseDashManifestText(text, location.href);
@@ -221,11 +239,12 @@ export default defineContentScript({
       const detail = (event as CustomEvent).detail as
         | { manifest: DashManifest; manifestUrl?: string; pageUrl: string }
         | undefined;
-      if (!detail?.manifest) return;
+      const manifest = normalizeDashManifest(detail?.manifest);
+      if (!manifest) return;
       browser.runtime
         .sendMessage({
           action: "dashManifestDetected",
-          manifest: detail.manifest,
+          manifest,
           manifestUrl: detail.manifestUrl || "",
           pageUrl: detail.pageUrl || location.href,
         })

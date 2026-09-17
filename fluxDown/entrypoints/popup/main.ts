@@ -776,6 +776,13 @@ let resourcePageTitle = '';
 let resourcePageUrl = '';
 /** Popup 没有 sender.tab，下载时显式告诉 background 资源来自哪个页面。 */
 let resourceTabId: number | undefined;
+let popupResourceVersion = 0;
+let popupManifestVersion = 0;
+let popupCandidateCache: {
+  resourceVersion: number;
+  manifestVersion: number;
+  candidates: MediaCandidate[];
+} | null = null;
 
 type PopupResourceItem = DetectedResource | MediaCandidate;
 
@@ -822,6 +829,9 @@ async function refreshResources(): Promise<void> {
     resourcePageUrl = '';
     resourceTabId = undefined;
   }
+  popupResourceVersion++;
+  popupManifestVersion++;
+  popupCandidateCache = null;
   // 快照刷新后清掉已消失资源的选中态
   const alive = new Set(resourceRowsFor('all').map((row) => row.id));
   for (const id of resSelectedIds) {
@@ -842,12 +852,26 @@ function updateResourceBadge(): void {
 }
 
 function popupMediaCandidates(): MediaCandidate[] {
-  return buildMediaCandidates(resources, {
+  if (
+    popupCandidateCache &&
+    popupCandidateCache.resourceVersion === popupResourceVersion &&
+    popupCandidateCache.manifestVersion === popupManifestVersion
+  ) {
+    return popupCandidateCache.candidates;
+  }
+  const candidates = buildMediaCandidates(resources, {
     pageTitle: resourcePageTitle,
     pageUrl: resourcePageUrl,
     fallbackTitle: t('panel.videoCandidate'),
+    videoLabel: t('panel.videoIndex'),
     manifests: dashManifests,
   });
+  popupCandidateCache = {
+    resourceVersion: popupResourceVersion,
+    manifestVersion: popupManifestVersion,
+    candidates,
+  };
+  return candidates;
 }
 
 function resourceDebugFilename(): string {
@@ -857,6 +881,7 @@ function resourceDebugFilename(): string {
 
 /** 导出当前活动页面的原始资源、清单解析结果和候选聚合关系。 */
 async function exportResourceDebugLog(): Promise<void> {
+  if (!import.meta.env.DEV) return;
   resExportDebugBtn.disabled = true;
   const filename = resourceDebugFilename();
   const log = buildResourceDebugLog({
@@ -981,7 +1006,7 @@ function resDownloadPayload(r: DetectedResource) {
   return {
     url: r.url,
     referrer: r.pageUrl || undefined,
-    filename: resourceDisplayName(r),
+    filename: r.filename,
     fileSize: r.size > 0 ? r.size : undefined,
     mimeType: r.mimeType,
   };
@@ -1354,9 +1379,12 @@ resBatchBtn.addEventListener('click', async () => {
   }
 });
 
-resExportDebugBtn.addEventListener('click', () => {
-  void exportResourceDebugLog();
-});
+resExportDebugBtn.hidden = !import.meta.env.DEV;
+if (import.meta.env.DEV) {
+  resExportDebugBtn.addEventListener('click', () => {
+    void exportResourceDebugLog();
+  });
+}
 
 // ===== 排除当前站点 =====
 // 只回答"当前站点是否被排除"这一个问题，并允许一键切换；完整排除列表

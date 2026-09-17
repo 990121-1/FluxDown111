@@ -29,6 +29,8 @@ export interface DashTrack {
   id?: string | number;
   /** 视频帧率；常见 JSON 值为数字，XML 值也可能是 `60000/1001`。 */
   frameRate?: number;
+  /** MPD Period identity; tracks must only be paired within the same Period. */
+  periodId?: string;
   /** SegmentTemplate/SegmentList 只有轨道线索，没有单个完整文件 URL。 */
   downloadable?: boolean;
 }
@@ -187,10 +189,17 @@ function toTrack(item: unknown, baseUrl: string): DashTrack | null {
   const track: DashTrack = { url: abs };
   if (typeof o.mimeType === "string") track.mimeType = o.mimeType;
   if (typeof o.codecs === "string") track.codecs = o.codecs;
-  if (typeof o.bandwidth === "number") track.bandwidth = o.bandwidth;
-  if (typeof o.width === "number") track.width = o.width;
-  if (typeof o.height === "number") track.height = o.height;
+  if (typeof o.bandwidth === "number" && Number.isFinite(o.bandwidth)) {
+    track.bandwidth = o.bandwidth;
+  }
+  if (typeof o.width === "number" && Number.isFinite(o.width)) track.width = o.width;
+  if (typeof o.height === "number" && Number.isFinite(o.height)) track.height = o.height;
   if (typeof o.id === "string" || typeof o.id === "number") track.id = o.id;
+  if (typeof o.periodId === "string" && o.periodId.trim()) {
+    track.periodId = o.periodId.trim();
+  } else if (typeof o.period_id === "string" && o.period_id.trim()) {
+    track.periodId = o.period_id.trim();
+  }
   const frameRate = parseFrameRate(o.frameRate ?? o.frame_rate ?? o.framerate ?? o.fps);
   if (frameRate !== undefined) track.frameRate = frameRate;
   return track;
@@ -494,14 +503,19 @@ export function parseDashXml(text: string, baseUrl: string): DashManifest | null
 
     const video: DashTrack[] = [];
     const audio: DashTrack[] = [];
+    let periodIndex = 0;
 
     const visit = (
       node: XmlNode,
       inheritedBase: string,
       inheritedTemplate?: XmlNode,
+      inheritedPeriodId?: string,
     ): void => {
       const nodeBase = resolveXmlBase(node, inheritedBase);
       const ownTemplate = childSegmentTemplate(node) || inheritedTemplate;
+      const periodId = node.name === "period"
+        ? `period:${periodIndex++}:${node.attributes.id || ""}`
+        : inheritedPeriodId;
 
       if (node.name === "adaptationset") {
         const adaptationMime = node.attributes.mimetype ||
@@ -531,6 +545,7 @@ export function parseDashXml(text: string, baseUrl: string): DashManifest | null
             frameRate: parseFrameRate(representation.attributes.framerate),
             downloadable: !hasTemplate,
           };
+          if (periodId) track.periodId = periodId;
           if (isXmlVideo(mimeType, codecs, representation)) video.push(track);
           else if (isXmlAudio(mimeType, codecs)) audio.push(track);
         }
@@ -538,7 +553,7 @@ export function parseDashXml(text: string, baseUrl: string): DashManifest | null
 
       for (const child of node.children) {
         if (node.name === "adaptationset" && child.name === "representation") continue;
-        visit(child, nodeBase, ownTemplate);
+        visit(child, nodeBase, ownTemplate, periodId);
       }
     };
 
@@ -547,6 +562,47 @@ export function parseDashXml(text: string, baseUrl: string): DashManifest | null
   } catch {
     return null;
   }
+}
+
+function normalizeDashNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeDashTrack(value: unknown): DashTrack | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.url !== "string" || !/^https?:\/\//i.test(raw.url)) return null;
+
+  const track: DashTrack = { url: raw.url };
+  for (const key of ["mimeType", "codecs"] as const) {
+    if (typeof raw[key] === "string") track[key] = raw[key];
+  }
+  for (const key of ["bandwidth", "width", "height", "frameRate"] as const) {
+    const number = normalizeDashNumber(raw[key]);
+    if (number !== undefined) track[key] = number;
+  }
+  if (typeof raw.id === "string" || typeof raw.id === "number") track.id = raw.id;
+  if (typeof raw.periodId === "string" && raw.periodId.trim()) {
+    track.periodId = raw.periodId.trim();
+  }
+  if (typeof raw.downloadable === "boolean") track.downloadable = raw.downloadable;
+  return track;
+}
+
+/** Fail-closed boundary for page-controlled manifest events and persisted UI state. */
+export function normalizeDashManifest(value: unknown): DashManifest | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (!Array.isArray(raw.video) || !Array.isArray(raw.audio)) return null;
+
+  const video = raw.video
+    .map(normalizeDashTrack)
+    .filter((track): track is DashTrack => track !== null);
+  const audio = raw.audio
+    .map(normalizeDashTrack)
+    .filter((track): track is DashTrack => track !== null);
+  if (video.length === 0 && audio.length === 0) return null;
+  return { video, audio };
 }
 
 /** 统一入口：按响应前缀选择 XML MPD 或 JSON DASH。 */

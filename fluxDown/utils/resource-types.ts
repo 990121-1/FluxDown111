@@ -585,9 +585,7 @@ const NOISE_PATH_PATTERNS: string[] = [
  * 影响带明确媒体扩展名的真实资源，也不会拦截 Content-Disposition 下载。
  */
 const API_PATH_PATTERNS: RegExp[] = [
-  /\/(?:api|ajax)(?:\/|$)/,
   /\/graphql(?:\/|$)/,
-  /\/x\/(?:web-interface|player|v2)(?:\/|$)/,
 ];
 
 /** 判断一个无扩展名 URL 是否更像页面 API，而不是用户要下载的文件。 */
@@ -596,10 +594,12 @@ export function isLikelyApiUrl(url: string): boolean {
     const parsed = new URL(url);
     if (extractExtension(url)) return false;
 
-    const hostname = parsed.hostname.toLowerCase();
     const pathname = parsed.pathname.toLowerCase();
-    const apiHost = hostname.startsWith("api.") || hostname.includes(".api.");
-    return apiHost || API_PATH_PATTERNS.some((pattern) => pattern.test(pathname));
+    // Hostnames such as api.example.com are not enough evidence: media APIs
+    // and real downloads are commonly served from the same host. Keep only
+    // an explicit, low-noise path signature here so playurl-like endpoints
+    // remain visible to the user.
+    return API_PATH_PATTERNS.some((pattern) => pattern.test(pathname));
   } catch {
     return false;
   }
@@ -917,7 +917,7 @@ export function isWorthShowing(resource: DetectedResource): boolean {
     return false;
   }
 
-  // 未知类型的 API 响应（例如 B 站 /x/web-interface/view）不是可下载文件。
+  // 未知类型的明确 API 响应（例如 GraphQL）不是可下载文件。
   // attachment 明确表达了用户要下载，必须保留；视频/音频/流等已知媒体也不
   // 走此规则，避免误伤无扩展名的真实媒体 URL。
   if (

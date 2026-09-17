@@ -27,6 +27,25 @@ export default defineUnlistedScript(() => {
   // 拦到标准 DASH JSON manifest 时派发：权威清晰度 + 视频/音频轨 URL 列表，
   // 供 Isolated World 转发给 background 存入 tab 级 manifest store。
   const FLUXDOWN_DASH_EVENT = "fluxdown-dash-manifest";
+  // SPA history changes are observed here because this script runs in MAIN
+  // world; the isolated content script cannot see page-world monkey patches.
+  const FLUXDOWN_PAGE_URL_EVENT = "fluxdown-page-url-changed";
+
+  function notifyPageUrlChanged(): void {
+    document.dispatchEvent(new CustomEvent(FLUXDOWN_PAGE_URL_EVENT));
+  }
+
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+  history.pushState = function (...args: Parameters<History["pushState"]>): void {
+    originalPushState.apply(this, args);
+    notifyPageUrlChanged();
+  };
+  history.replaceState = function (...args: Parameters<History["replaceState"]>): void {
+    originalReplaceState.apply(this, args);
+    notifyPageUrlChanged();
+  };
+  window.addEventListener("popstate", notifyPageUrlChanged);
 
   /** 已通知过的 URL 集合（防止重复通知） */
   const notifiedUrls = new Set<string>();
@@ -58,18 +77,21 @@ export default defineUnlistedScript(() => {
 
   /** DASH 清单通常是 application/dash+xml，也可能是流 URL + text/xml/JSON。 */
   function isDashManifestResponse(ct: string, url: string): boolean {
+    if (!isHttpUrl(url) || isSkippableCt(ct)) return false;
     const lower = ct.toLowerCase();
     if (
       lower.includes("dash+xml") ||
       lower.startsWith("text/xml") ||
       lower.startsWith("application/xml")
     ) return true;
-    return (
-      isStreamingUrl(url) &&
+    if (lower.startsWith("text/html")) return false;
+    // Do not treat generic `/playlist` API endpoints as DASH merely because
+    // their path contains a streaming-looking word. JSON DASH endpoints may
+    // still be discovered by the guarded generic JSON branch below.
+    return /(?:\.mpd|\/manifest(?:\/|$))/i.test(url) &&
       !lower.startsWith("video/") &&
       !lower.startsWith("audio/") &&
-      !lower.includes("mpegurl")
-    );
+      !lower.includes("mpegurl");
   }
 
   /**
