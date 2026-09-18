@@ -3196,21 +3196,96 @@ export default defineBackground(() => {
   }
 
   /**
-   * 将字节数组解码为字符串：优先 UTF-8，失败时回退 GBK（老旧中文服务器常见），
-   * 双失败返回 `null`。与 Rust 引擎 `decode_bytes_utf8_or_gbk` 保持一致的策略，
+   * 将字节数组解码为字符串：优先 UTF-8，失败时兼容 GBK / Big5（老旧中文
+   * 服务器常见），双失败返回 `null`。与 Rust 引擎保持一致的策略，
    * 避免浏览器插件与桌面端对同一响应头解析出不同的文件名。
    */
-  function decodeBytesUtf8OrGbk(bytes: Uint8Array): string | null {
+  type LegacyFilenameCharset = "utf-8" | "gbk" | "big5";
+
+  function normalizeLegacyFilenameCharset(
+    charset: string | undefined,
+  ): LegacyFilenameCharset | undefined {
+    const normalized = charset?.trim().replace(/^"+|"+$/g, "").toLowerCase();
+    if (!normalized) return undefined;
+    if (normalized === "utf-8" || normalized === "utf8") return "utf-8";
+    if (["gbk", "gb2312", "gb18030", "cp936"].includes(normalized)) {
+      return "gbk";
+    }
+    if (
+      ["big5", "big5-hkscs", "cp950", "windows-950"].includes(normalized)
+    ) {
+      return "big5";
+    }
+    return undefined;
+  }
+
+  function filenameEncodingScore(value: string): number {
+    let score = 0;
+    for (const ch of value) {
+      if (/\p{Cc}/u.test(ch)) score -= 8;
+      else if (/[぀-ヿ]/u.test(ch)) score -= 5;
+      else if (/[一-鿿]/u.test(ch)) score += 2;
+      else if (ch === "\ufffd") score -= 10;
+    }
+    return score;
+  }
+
+  function hasStrongLegacyMojibake(value: string): boolean {
+    return [...value].some(
+      (ch) =>
+        /\p{Cc}/u.test(ch) ||
+        /[぀-ヿ]/u.test(ch) ||
+        /[-]/u.test(ch) ||
+        ch === "\ufffd",
+    );
+  }
+
+  function decodeBytesUtf8OrChineseLegacy(
+    bytes: Uint8Array,
+    charset?: string,
+  ): string | null {
+    const preferred = normalizeLegacyFilenameCharset(charset);
+    if (preferred === "gbk") {
+      try {
+        return new TextDecoder("gbk", { fatal: true }).decode(bytes);
+      } catch {
+        return null;
+      }
+    }
+    if (preferred === "big5") {
+      try {
+        return new TextDecoder("big5", { fatal: true }).decode(bytes);
+      } catch {
+        return null;
+      }
+    }
+
     try {
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      // A mislabeled UTF-8 filename may still contain legacy Chinese bytes.
+      // Keep the compatibility fallback below for that non-conforming case.
+    }
+
+    let gbk: string | null = null;
+    let big5: string | null = null;
+    try {
+      gbk = new TextDecoder("gbk", { fatal: true }).decode(bytes);
     } catch {
       // fallthrough
     }
     try {
-      return new TextDecoder("gbk", { fatal: true }).decode(bytes);
+      big5 = new TextDecoder("big5", { fatal: true }).decode(bytes);
     } catch {
-      return null;
+      // fallthrough
     }
+
+    if (!gbk) return big5;
+    if (!big5) return gbk;
+    return hasStrongLegacyMojibake(gbk) &&
+      filenameEncodingScore(big5) > filenameEncodingScore(gbk)
+      ? big5
+      : gbk;
   }
 
   /**
@@ -3254,15 +3329,18 @@ export default defineBackground(() => {
    *   产生重音拉丁字母乱码。
    *
    * 纯 ASCII 值直接返回，避免无谓的字节往返；否则按字节展开
-   * （percent-decode + Latin-1 还原）后用 UTF-8/GBK 解码，失败则回退原值。
+   * （percent-decode + Latin-1 还原）后用 UTF-8/GBK/Big5 解码，失败则回退原值。
    */
-  function decodeDispositionFilenameValue(raw: string): string {
+  function decodeDispositionFilenameValue(
+    raw: string,
+    charset?: string,
+  ): string {
     const trimmed = raw.trim();
     if (!trimmed || !/[%\u0080-\uffff]/.test(trimmed)) {
       return trimmed;
     }
     const bytes = percentDecodeToBytes(trimmed);
-    const decoded = decodeBytesUtf8OrGbk(bytes);
+    const decoded = decodeBytesUtf8OrChineseLegacy(bytes, charset);
     return decoded && decoded.trim() ? decoded : trimmed;
   }
 
@@ -3293,15 +3371,15 @@ export default defineBackground(() => {
     if (!disposition) return "";
 
     // 优先尝试 filename*（RFC 5987 编码：charset'lang'percent-encoded-name）。
-    // charset 字段按理应决定解码方式，这里统一走 UTF-8 优先 / GBK 回退
-    // （老旧中文服务器常声明 UTF-8 却实际发送 GBK），与 filename= 分支
-    // 及 Rust 引擎 extract_from_content_disposition 保持一致。
+    // charset 字段优先决定解码方式；未声明或声明不可靠时使用 UTF-8 优先、
+    // GBK/Big5 候选探测，与 filename= 分支及 Rust 引擎保持一致。
     const starMatch = disposition.match(
-      /filename\*\s*=\s*[^']*'[^']*'([^;]+)/i,
+      /filename\*\s*=\s*"?([^']*)'[^']*'([^;"]+)"?/i,
     );
     if (starMatch) {
       const decoded = decodeDispositionFilenameValue(
-        stripSurroundingQuotes(starMatch[1]),
+        stripSurroundingQuotes(starMatch[2]),
+        starMatch[1],
       );
       if (decoded) return decoded;
     }
