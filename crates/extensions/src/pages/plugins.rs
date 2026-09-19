@@ -6,8 +6,9 @@ use std::collections::HashSet;
 use fluxdown_protocol::{InstalledPlugin, MarketEntryDto, PluginDto};
 use fluxdown_ui_theme::CONTROL_HEIGHT;
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Window,
-    div, prelude::FluentBuilder as _, px,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement as _, Styled, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, Size, StyledExt as _,
@@ -19,6 +20,7 @@ use gpui_component::{
     link::Link,
     switch::Switch,
     tag::Tag,
+    tooltip::Tooltip,
     v_flex,
 };
 
@@ -420,13 +422,19 @@ impl ExtensionsView {
                         )
                     })
                     .when(load_failed && !plugin.load_error.is_empty(), |this| {
+                        let load_error = plugin.load_error.clone();
+                        let load_error_tooltip = plugin.load_error.clone();
                         this.child(
                             div()
+                                .id(("plugin-load-error", index))
                                 .w_full()
                                 .truncate()
                                 .text_xs()
                                 .text_color(theme.danger)
-                                .child(plugin.load_error.clone()),
+                                .child(load_error)
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(load_error_tooltip.clone()).build(window, cx)
+                                }),
                         )
                     }),
             )
@@ -443,7 +451,7 @@ impl ExtensionsView {
             )
             .child(
                 Switch::new(("plugin-enabled", index))
-                    .checked(plugin.enabled)
+                    .checked(plugin.enabled && !load_failed)
                     .disabled(busy || load_failed)
                     .on_click({
                         let identity = identity.clone();
@@ -461,7 +469,7 @@ impl ExtensionsView {
                         })
                     }),
             )
-            .when(!plugin.settings.is_empty(), |this| {
+            .when(!load_failed && !plugin.settings.is_empty(), |this| {
                 let identity = identity.clone();
                 this.child(
                     Button::new(("plugin-settings", index))
@@ -476,7 +484,7 @@ impl ExtensionsView {
                         })),
                 )
             })
-            .when(plugin.auth_supported, |this| {
+            .when(!load_failed && plugin.auth_supported, |this| {
                 let identity = identity.clone();
                 this.child(
                     Button::new(("plugin-auth", index))
@@ -1069,11 +1077,17 @@ impl ExtensionsView {
                 .text_with("pluginAuthDialogTitle", &[("name", &plugin.name)]),
         );
         let dialog = cx.new(|cx| PluginAuthDialog::new(translator, port, identity, window, cx));
+        let dialog_for_cancel = dialog.clone();
         window.open_dialog(cx, move |dialog_view, _, _| {
             let dialog_for_content = dialog.clone();
+            let dialog_for_cancel = dialog_for_cancel.clone();
             dialog_view
                 .title(title.clone())
                 .w(px(460.))
+                .on_cancel(move |_, _, cx| {
+                    dialog_for_cancel.update(cx, |this, cx| this.cancel_session(cx));
+                    true
+                })
                 .content(move |content, _, _| content.child(dialog_for_content.clone()))
         });
     }

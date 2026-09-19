@@ -292,30 +292,6 @@ impl ExtensionsController {
         )
     }
 
-    /// 驱动插件登录；`action` 为 `begin` / `poll` / `cancel` / `logout` / `status`。
-    pub fn plugin_auth(
-        &self,
-        identity: String,
-        action: &str,
-        site: String,
-        auth_ref: String,
-        session_id: String,
-        input: String,
-    ) -> PortFuture<serde_json::Value> {
-        if self.stale {
-            return unavailable();
-        }
-        plugin_auth_call(
-            &self.port,
-            &identity,
-            action,
-            &site,
-            &auth_ref,
-            &session_id,
-            &input,
-        )
-    }
-
     /// 从本机 zip 安装：agent 读文件、上传 daemon blob 后转调 `daemon.plugin.install`。
     pub fn install_plugin_file(&self, path: String) -> PortFuture<serde_json::Value> {
         self.call(

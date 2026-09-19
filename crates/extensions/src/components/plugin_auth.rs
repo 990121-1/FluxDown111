@@ -8,11 +8,11 @@ use fluxdown_ui_i18n::Translator;
 use fluxdown_ui_theme::CONTROL_HEIGHT;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
-    Window, div,
+    AppContext as _, ClipboardItem, Context, Entity, Image, ImageFormat, IntoElement,
+    ParentElement, Render, Styled, Subscription, Window, div, img, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     input::{Input, InputState},
@@ -149,28 +149,38 @@ impl PluginAuthDialog {
         .detach();
     }
 
-    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.session_id.is_empty() {
-            window.close_dialog(cx);
+    /// 向引擎取消当前登录会话；无会话或忙碌时是 no-op。取消按钮与对话框被
+    /// X / Esc / 点击遮罩关闭（不经过按钮，见 `open_plugin_auth` 里
+    /// `Dialog::on_cancel` 的钩子）两条路径共用，保证任何关闭方式都不会
+    /// 在引擎侧留下悬空的登录会话。
+    pub(crate) fn cancel_session(&self, cx: &mut Context<Self>) {
+        // 不看 `busy`：自动轮询每 2s 置一次 busy，若此时用户关闭对话框，
+        // 仍必须通知引擎释放会话；cancel 是 fire-and-forget，与在途 poll 并存无害。
+        if self.session_id.is_empty() {
             return;
         }
         let identity = self.identity.clone();
         let site = self.site.read(cx).value().to_string();
         let session_id = self.session_id.clone();
+        let auth_ref = self.auth_ref.clone();
         let future = plugin_auth_call(
             &self.port,
             &identity,
             "cancel",
             &site,
-            &self.auth_ref,
+            &auth_ref,
             &session_id,
             "",
         );
-        window.close_dialog(cx);
         cx.spawn(async move |_this, _cx| {
             let _ = future.await;
         })
         .detach();
+    }
+
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_session(cx);
+        window.close_dialog(cx);
     }
 
     fn apply_response(
@@ -180,20 +190,39 @@ impl PluginAuthDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 无条件先取出该标志：不管这次响应的 `status` 是什么，都不能把它带到
+        // 下一次非 logout 的响应里误清凭据（logout 返回 error 时尤其如此）。
+        let was_logout = std::mem::take(&mut self.logout_pending);
         self.status = response.status.clone();
         self.session_id = response.session_id;
         self.auth_ref = response.auth_ref.unwrap_or_default();
-        self.challenge = response.challenge;
-        self.challenge_type = response.challenge_type;
+        if self.status == "pending" {
+            // pending 回包的 challenge/challengeType 均为可选字段：插件在同一
+            // 会话的后续 poll 里可以不重复下发，缺失时保留上一帧，避免二维码
+            // 或提示内容在轮询途中被空响应中途抹掉。
+            if response.challenge.is_some() {
+                self.challenge = response.challenge;
+            }
+            if response.challenge_type.is_some() {
+                self.challenge_type = response.challenge_type;
+            }
+        } else {
+            self.challenge = response.challenge;
+            self.challenge_type = response.challenge_type;
+        }
         self.message = (!response.message.is_empty()).then_some(response.message);
-        if self.logout_pending && self.status == "success" {
+        if was_logout {
+            // logout 无论成功失败，引擎都已无条件删除本地档案；客户端同步清空
+            // 登录态，不依赖插件回包内容——`status` 在 logout 语境下表示“注销
+            // 请求本身是否成功”，不代表“是否仍处于登录状态”。渲染侧改用
+            // `auth_ref` 非空联合判定是否已登录，清空后自然回落到「开始登录」。
             self.auth_ref.clear();
             self.session_id.clear();
             self.challenge = None;
             self.challenge_type = None;
-            self.logout_pending = false;
         }
         if self.status == "pending"
+            && !self.session_id.is_empty()
             && self
                 .challenge_type
                 .as_deref()
@@ -292,6 +321,22 @@ impl PluginAuthDialog {
             }
         }
     }
+
+    /// 复制挑战原文到剪贴板；展示侧的截断（见 [`truncate_challenge_text`]）
+    /// 不影响复制的完整内容。
+    fn copy_challenge(
+        &self,
+        value: String,
+        copied_label: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.write_to_clipboard(ClipboardItem::new_string(value));
+        window.push_notification(
+            gpui_component::notification::Notification::success(copied_label),
+            cx,
+        );
+    }
 }
 
 impl Render for PluginAuthDialog {
@@ -301,13 +346,27 @@ impl Render for PluginAuthDialog {
         let begin = translator.text("pluginAuthBegin").to_owned();
         let poll = translator.text("pluginAuthPoll").to_owned();
         let cancel = translator.text("cancel").to_owned();
-        let status = match self.status.as_str() {
-            "pending" => translator.text("pluginAuthPending").to_owned(),
-            "success" => translator.text("pluginAuthSuccess").to_owned(),
-            _ => String::new(),
+        let logout_label = translator.text("pluginAuthLogout").to_owned();
+        let copy_label = translator.text("apiServiceCopy").to_owned();
+        let copied_label = translator.text("apiServiceCopied").to_owned();
+        // `status` 在不同 action 下语义不同（logout 的 "success" 是“注销成功”而
+        // 非“已登录”），故是否已登录额外联合 `auth_ref` 非空判定；logout 完成
+        // 后 `apply_response` 已清空 `auth_ref`，这里自然回落到「开始登录」。
+        let is_logged_in = self.status == "success" && !self.auth_ref.is_empty();
+        let is_qrcode = self
+            .challenge_type
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("qrcode"));
+        let session_pending = self.status == "pending" && !self.session_id.is_empty();
+        let status_text = if is_logged_in {
+            translator.text("pluginAuthSuccess").to_owned()
+        } else if session_pending {
+            translator.text("pluginAuthPending").to_owned()
+        } else {
+            String::new()
         };
         let challenge = self.challenge.clone();
-        let challenge_type = self.challenge_type.clone().unwrap_or_default();
+        let challenge_type_label = self.challenge_type.clone().unwrap_or_default();
         v_flex()
             .w_full()
             .gap_3()
@@ -329,10 +388,15 @@ impl Render for PluginAuthDialog {
                     .with_size(gpui_component::Size::Medium)
                     .disabled(self.busy),
             )
-            .when(!status.is_empty(), |this| {
-                this.child(div().text_sm().font_semibold().child(status))
+            .when(!status_text.is_empty(), |this| {
+                this.child(div().text_sm().font_semibold().child(status_text))
             })
             .when_some(challenge, |this, value| {
+                // 插件挑战不可信：`data:image/` 载荷尝试直接解码渲染成图片
+                // （避免整段 base64 糊在对话框里）；解码失败或非图片挑战一律
+                // 退化成截断文本 + 复制按钮，保证原文始终可以取出。
+                let image = decode_data_image_challenge(&value);
+                let fallback_text = image.is_none().then(|| truncate_challenge_text(&value));
                 this.child(
                     v_flex()
                         .gap_1()
@@ -343,9 +407,36 @@ impl Render for PluginAuthDialog {
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child(challenge_type),
+                                .child(challenge_type_label),
                         )
-                        .child(div().text_xs().child(value)),
+                        .when_some(image, |this, image| {
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .justify_center()
+                                    .child(img(Arc::new(image)).size(px(200.))),
+                            )
+                        })
+                        .when_some(fallback_text, |this, text| {
+                            let copy_value = value.clone();
+                            this.child(div().text_xs().child(text)).child(
+                                Button::new("plugin-auth-copy-challenge")
+                                    .outline()
+                                    .small()
+                                    .h(CONTROL_HEIGHT)
+                                    .icon(IconName::Copy)
+                                    .label(copy_label)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.copy_challenge(
+                                            copy_value.clone(),
+                                            copied_label.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        }),
                 )
             })
             .when_some(self.message.clone(), |this, message| {
@@ -362,42 +453,185 @@ impl Render for PluginAuthDialog {
                     )
                     .child(
                         div()
-                            .when(self.auth_ref.is_empty(), |this| {
-                                this.child(
-                                    Button::new("plugin-auth-begin")
-                                        .primary()
-                                        .h(CONTROL_HEIGHT)
-                                        .label(if self.session_id.is_empty() {
-                                            begin
-                                        } else {
-                                            poll
-                                        })
-                                        .loading(self.busy)
-                                        .disabled(self.busy)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            let action = if this.session_id.is_empty() {
-                                                "begin"
-                                            } else {
-                                                "poll"
-                                            };
-                                            this.call(action, window, cx);
-                                        })),
-                                )
-                            })
-                            .when(!self.auth_ref.is_empty(), |this| {
+                            .when(is_logged_in, |this| {
                                 this.child(
                                     Button::new("plugin-auth-logout")
                                         .outline()
                                         .h(CONTROL_HEIGHT)
-                                        .label(translator.text("pluginAuthLogout").to_owned())
+                                        .label(logout_label)
                                         .loading(self.busy)
                                         .disabled(self.busy)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.call("logout", window, cx);
                                         })),
                                 )
+                            })
+                            .when(!is_logged_in && session_pending && !is_qrcode, |this| {
+                                // 非二维码挑战没有自动轮询，提供手动「检查状态」。
+                                this.child(
+                                    Button::new("plugin-auth-poll")
+                                        .primary()
+                                        .h(CONTROL_HEIGHT)
+                                        .label(poll)
+                                        .loading(self.busy)
+                                        .disabled(self.busy)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.call("poll", window, cx);
+                                        })),
+                                )
+                            })
+                            .when(!is_logged_in && !session_pending, |this| {
+                                // 凡非 success（已登录）/ pending（会话进行中）
+                                // 均视为未登录，统一显示「开始登录」。
+                                this.child(
+                                    Button::new("plugin-auth-begin")
+                                        .primary()
+                                        .h(CONTROL_HEIGHT)
+                                        .label(begin)
+                                        .loading(self.busy)
+                                        .disabled(self.busy)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.call("begin", window, cx);
+                                        })),
+                                )
                             }),
                     ),
             )
+    }
+}
+
+/// 单次渲染中，挑战文本超过该长度即截断显示（复制按钮始终给出完整原文）；
+/// 插件返回的内容不可信，避免超长字符串拖垮布局或卡顿渲染。
+const CHALLENGE_TEXT_LIMIT: usize = 512;
+
+/// `data:image/...;base64,` 挑战超过该长度直接放弃图片解码，退化为文本 +
+/// 复制按钮；常规二维码远小于此值，超限视为异常载荷。
+const MAX_CHALLENGE_DATA_URL_LEN: usize = 256 * 1024;
+
+/// 把 `data:image/<mime>[;charset=..];base64,<payload>` 形式的挑战解析成可
+/// 直接交给 `img()` 渲染的 [`Image`]；非 `data:` 前缀、非 base64 编码、未知
+/// 格式或超限一律返回 `None`——调用侧退回纯文本 + 复制按钮，不代表挑战本身
+/// 无效，只是本端选择不预览。
+fn decode_data_image_challenge(value: &str) -> Option<Image> {
+    if value.len() > MAX_CHALLENGE_DATA_URL_LEN {
+        return None;
+    }
+    let rest = value.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    let mut segments = meta.split(';');
+    let mime = segments.next()?.to_ascii_lowercase();
+    if !segments.any(|segment| segment.eq_ignore_ascii_case("base64")) {
+        return None;
+    }
+    let format = ImageFormat::from_mime_type(&mime)?;
+    let bytes = base64_decode(payload)?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(Image::from_bytes(format, bytes))
+}
+
+/// 极简标准字母表 base64 解码（RFC 4648），仅用于上面的 data URL 挑战预览；
+/// 沿用 `native/engine/src/proxy_config.rs::base64_encode` 的既有做法，为
+/// 单处用途手写而不是为此新增 `base64` 依赖。
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn sextet(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let cleaned: Vec<u8> = input
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    let end = cleaned
+        .iter()
+        .rposition(|&byte| byte != b'=')
+        .map_or(0, |index| index + 1);
+    let data = &cleaned[..end];
+    if data.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(data.len() * 3 / 4 + 3);
+    for chunk in data.chunks(4) {
+        let mut buf = [0u8; 4];
+        for (slot, &byte) in buf.iter_mut().zip(chunk) {
+            *slot = sextet(byte)?;
+        }
+        out.push((buf[0] << 2) | (buf[1] >> 4));
+        if chunk.len() > 2 {
+            out.push((buf[1] << 4) | (buf[2] >> 2));
+        }
+        if chunk.len() > 3 {
+            out.push((buf[2] << 6) | buf[3]);
+        }
+    }
+    Some(out)
+}
+
+/// 挑战文本超过 [`CHALLENGE_TEXT_LIMIT`] 字符时截断并追加省略号；复制按钮
+/// 始终复制未截断的原文。
+fn truncate_challenge_text(value: &str) -> String {
+    if value.chars().count() <= CHALLENGE_TEXT_LIMIT {
+        return value.to_string();
+    }
+    let mut truncated: String = value.chars().take(CHALLENGE_TEXT_LIMIT).collect();
+    truncated.push('…');
+    truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{base64_decode, decode_data_image_challenge, truncate_challenge_text};
+
+    #[test]
+    fn base64_decode_round_trips_known_vectors() {
+        assert_eq!(base64_decode("aGVsbG8=").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(base64_decode("aGVsbG8").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(base64_decode("YQ==").as_deref(), Some(&b"a"[..]));
+        assert_eq!(base64_decode("").as_deref(), Some(&b""[..]));
+    }
+
+    #[test]
+    fn base64_decode_rejects_invalid_alphabet() {
+        assert_eq!(base64_decode("not base64!"), None);
+    }
+
+    #[test]
+    fn decode_data_image_challenge_accepts_known_mime() {
+        let image = decode_data_image_challenge("data:image/png;base64,aGVsbG8=")
+            .expect("valid png data url should decode");
+        assert_eq!(image.format(), gpui::ImageFormat::Png);
+        assert_eq!(image.bytes(), b"hello");
+    }
+
+    #[test]
+    fn decode_data_image_challenge_rejects_non_image_text() {
+        assert!(decode_data_image_challenge("plain-text-challenge").is_none());
+        assert!(decode_data_image_challenge("https://example.com/login").is_none());
+    }
+
+    #[test]
+    fn decode_data_image_challenge_rejects_unknown_format_and_non_base64() {
+        assert!(decode_data_image_challenge("data:image/unknown;base64,aGVsbG8=").is_none());
+        assert!(decode_data_image_challenge("data:image/png,aGVsbG8=").is_none());
+    }
+
+    #[test]
+    fn truncate_challenge_text_keeps_short_text_unchanged() {
+        assert_eq!(truncate_challenge_text("short"), "short");
+    }
+
+    #[test]
+    fn truncate_challenge_text_truncates_long_text_on_char_boundaries() {
+        let long = "码".repeat(600);
+        let truncated = truncate_challenge_text(&long);
+        assert_eq!(truncated.chars().count(), super::CHALLENGE_TEXT_LIMIT + 1);
+        assert!(truncated.ends_with('…'));
     }
 }
