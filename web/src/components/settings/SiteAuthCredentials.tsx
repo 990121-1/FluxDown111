@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Pencil, Search } from 'lucide-react'
 import { api } from '../../lib/api'
-import { useI18n } from '../../lib/i18n'
+import { translateBackendMessage, useI18n } from '../../lib/i18n'
 import { filterSiteAuth, normalizeSiteKey } from '../../lib/site-auth'
 import { SetRow } from './controls'
 
@@ -25,6 +25,11 @@ export function SiteAuthCredentials() {
 
   const [authEditor, setAuthEditor] = useState<SiteAuthEditor | null>(null)
   const [query, setQuery] = useState('')
+  const [reqError, setReqError] = useState('')
+
+  function requestFailed(err: unknown) {
+    setReqError(t('set.siteAuth.requestFailed', { error: err instanceof Error ? translateBackendMessage(err.message) : String(err) }))
+  }
 
   async function openAuthEditor(site: string | null) {
     if (!site) {
@@ -39,15 +44,18 @@ export function SiteAuthCredentials() {
     }
   }
 
-  /** 保存 = 更新/新增该站点键后整表 JSON 写回；新增遇同键即覆盖（编辑语义）。 */
+  /** 保存：单站点 `PUT /api/v1/site-auth`（非整表 JSON 写回，与旧 config 版本不同）；
+   *  新增遇同键即覆盖（编辑语义）。 */
   function saveAuthEditor() {
     if (!authEditor) return
     const key = authEditor.site ?? normalizeSiteKey(authEditor.siteInput)
     if (!key || !authEditor.user.trim()) return
+    setReqError('')
     void api
       .saveSiteAuth({ site: key, user: authEditor.user.trim(), pass: authEditor.pass })
       .then(() => queryClient.invalidateQueries({ queryKey: ['site-auth'] }))
       .then(() => setAuthEditor(null))
+      .catch(requestFailed)
   }
 
   const authEditorCanSave =
@@ -104,6 +112,7 @@ export function SiteAuthCredentials() {
     <section className="set-section">
       <h2 className="set-title mt-6">{t('set.siteAuth')}</h2>
       <p className="set-desc">{t('set.siteAuth.desc')}</p>
+      {reqError && <p className="set-desc text-danger">{reqError}</p>}
       <div className="set-group">
         {siteAuthSites.length > 0 ? (
           <div className="set-row">
@@ -159,12 +168,12 @@ export function SiteAuthCredentials() {
                       type="button"
                       className="btn ghost sm"
                       onClick={() => {
-                        const next = { ...siteAuth }
-                        delete next[site]
                         if (authEditor?.site === site) setAuthEditor(null)
+                        setReqError('')
                         void api
                           .deleteSiteAuth(site)
                           .then(() => queryClient.invalidateQueries({ queryKey: ['site-auth'] }))
+                          .catch(requestFailed)
                       }}
                     >
                       {t('common.delete')}

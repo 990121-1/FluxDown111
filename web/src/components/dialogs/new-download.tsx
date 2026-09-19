@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Plus, X } from 'lucide-react'
-import { api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 import { parseCategories, resolveCategorySaveDir, visibleCategories } from '../../lib/categories'
 import { CATEGORIES_KEY } from '../../lib/config'
 import { cloudApi } from '../../lib/cloud/client'
@@ -253,8 +253,17 @@ export function NewDownloadDialog() {
   const siteAuthKey = singleUrl ? siteKeyFromUrl(singleUrl) : null
   const { data: siteAuthCredential } = useQuery({
     queryKey: ['site-auth-detail', siteAuthKey],
-    queryFn: () => api.getSiteAuth(siteAuthKey!),
+    queryFn: async () => {
+      try {
+        return await api.getSiteAuth(siteAuthKey!)
+      } catch (err) {
+        // 站点无已保存凭据是正常态（404），不当作查询失败处理，避免每次展开高级选项都报错重试。
+        if (err instanceof ApiError && err.status === 404) return null
+        throw err
+      }
+    },
     enabled: open && form.advOpen && Boolean(siteAuthKey),
+    retry: false,
   })
   useEffect(() => {
     if (!open) return

@@ -261,7 +261,7 @@ function PluginCard({ plugin }: { plugin: PluginDto }) {
               </a>
             )}
             {plugin.loadStatus === 'Failed' && plugin.loadError && (
-              <details className="mt-2 text-[12px] text-danger" onClick={(e) => e.stopPropagation()}>
+              <details className="mt-2 text-[12px] text-danger" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                 <summary className="cursor-pointer">{t('plugins.loadErrorBody')}</summary>
                 <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-danger/5 p-2 font-mono text-[11px]">
                   {plugin.loadError}
@@ -279,7 +279,7 @@ function PluginCard({ plugin }: { plugin: PluginDto }) {
               />
             )}
             <SetSwitch
-              checked={plugin.enabled}
+              checked={plugin.enabled && plugin.loadStatus !== 'Failed'}
               onCheckedChange={(v) => enabledMut.mutate({ identity: plugin.identity, enabled: v })}
               disabled={plugin.loadStatus === 'Failed' || enabledMut.isPending}
             />

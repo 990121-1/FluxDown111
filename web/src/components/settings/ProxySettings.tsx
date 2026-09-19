@@ -1,5 +1,5 @@
 // 代理：服务器出站代理（config 表）+ 连通性测试（/api/v1/proxy/test）。
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { api } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
 import { translateBackendMessage, useI18n } from '../../lib/i18n'
@@ -31,11 +31,6 @@ export function ProxySettings({
   const password = config.proxy_password ?? ''
   const noList = config.proxy_no_list ?? ''
 
-  const draftRef = useRef({ type, host, port, username, password })
-  useEffect(() => {
-    draftRef.current = { type, host, port, username, password }
-  }, [type, host, port, username, password])
-
   const [testState, setTestState] = useState<TestState>({ status: 'idle' })
 
   /** 开启代理时与多 CDN 并发互斥（对齐桌面端 _selectProxyMode）：功能已开启则弹
@@ -66,11 +61,11 @@ export function ProxySettings({
     setTestState({ status: 'pending' })
     try {
       const res = await api.proxyTest({
-        proxyType: draftRef.current.type,
-        host: draftRef.current.host.trim(),
-        port: draftRef.current.port.trim(),
-        username: draftRef.current.username || undefined,
-        password: draftRef.current.password || undefined,
+        proxyType: type,
+        host,
+        port,
+        username: username || undefined,
+        password: password || undefined,
       })
       setTestState({ status: 'ok', detail: t('set.proxy.testOk', { ms: res.latencyMs }) })
     } catch (err) {
@@ -102,34 +97,14 @@ export function ProxySettings({
         {mode === 'manual' ? (
           <>
             <SetRow title={t('set.proxy.type')} desc="HTTP / HTTPS / SOCKS4 / SOCKS5">
-              <SetSelect
-                value={type}
-                onValueChange={(v) => {
-                  draftRef.current.type = v
-                  mutate({ proxy_type: v })
-                }}
-                options={PROXY_TYPE_OPTIONS}
-              />
+              <SetSelect value={type} onValueChange={(v) => mutate({ proxy_type: v })} options={PROXY_TYPE_OPTIONS} />
             </SetRow>
-            <TextFieldRow
-              title={t('set.proxy.host')}
-              value={host}
-              placeholder="127.0.0.1"
-              onChange={(v) => { draftRef.current.host = v }}
-              onCommit={(v) => mutate({ proxy_host: v })}
-            />
-            <TextFieldRow
-              title={t('set.proxy.port')}
-              value={port}
-              placeholder="1080"
-              onChange={(v) => { draftRef.current.port = v }}
-              onCommit={(v) => mutate({ proxy_port: v })}
-            />
+            <TextFieldRow title={t('set.proxy.host')} value={host} placeholder="127.0.0.1" onCommit={(v) => mutate({ proxy_host: v })} />
+            <TextFieldRow title={t('set.proxy.port')} value={port} placeholder="1080" onCommit={(v) => mutate({ proxy_port: v })} />
             <TextFieldRow
               title={t('set.proxy.username')}
               desc={t('common.optional')}
               value={username}
-              onChange={(v) => { draftRef.current.username = v }}
               onCommit={(v) => mutate({ proxy_username: v })}
             />
             <TextFieldRow
@@ -137,7 +112,6 @@ export function ProxySettings({
               desc={t('common.optional')}
               value={password}
               password
-              onChange={(v) => { draftRef.current.password = v }}
               onCommit={(v) => mutate({ proxy_password: v })}
             />
             <TextFieldRow

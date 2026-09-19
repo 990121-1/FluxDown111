@@ -616,6 +616,8 @@ export type ConfigMap = Record<string, string>
 export type SettingValueType = 'string' | 'number' | 'boolean'
 export type SettingWidget = 'text' | 'password' | 'textarea' | 'select' | 'toggle' | 'number' | 'folder'
 export type PluginDisabledReason = 'None' | 'Manual' | 'CircuitBreaker'
+/** `Loaded`/`Failed`，与三端 wire 字面量一致（Rust 侧单点定义于 `plugin::manager`）。 */
+export type PluginLoadStatus = 'Loaded' | 'Failed'
 
 export interface SettingOptionDto {
   value: string
@@ -658,7 +660,7 @@ export interface PluginDto {
   /** manifest 声明的订阅 provider ID，旧服务端可能缺省。 */
   subscriptionProviderIds?: string[]
   /** `Loaded` / `Failed`；与 enabled 独立。旧服务端缺省视为已加载。 */
-  loadStatus?: 'Loaded' | 'Failed' | string
+  loadStatus?: PluginLoadStatus
   /** 加载失败的可读原因。 */
   loadError?: string
 }
