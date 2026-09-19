@@ -1868,8 +1868,10 @@ fn has_plausible_extension(name: &str) -> bool {
 fn extract_from_content_disposition(headers: &reqwest::header::HeaderMap) -> Option<String> {
     let disposition = headers.get(reqwest::header::CONTENT_DISPOSITION)?;
     // HeaderValue may contain raw UTF-8, GBK, or Big5 bytes in legacy filename= values.
-    // Preserve each header byte as a Latin-1 code unit first; the filename decoder below
-    // can then recover the original bytes and choose the appropriate Chinese encoding.
+    // Carry each header byte as a Latin-1 code unit so the ASCII parameter structure can
+    // be split with &str tools; every value is turned back into its original bytes with
+    // `latin1_bytes` before decoding — `str::as_bytes` on this carrier would re-encode
+    // the non-ASCII code units as two-byte UTF-8 and corrupt raw legacy bytes.
     let value: String = disposition
         .as_bytes()
         .iter()
@@ -1896,7 +1898,8 @@ fn extract_from_content_disposition(headers: &reqwest::header::HeaderMap) -> Opt
             let charset = parts.next();
             let _language = parts.next();
             if let Some(encoded) = parts.next()
-                && let Ok(decoded) = urlencoding_decode_with_charset(encoded, charset)
+                && let Ok(decoded) =
+                    percent_decode_bytes_with_charset(&latin1_bytes(encoded), charset)
             {
                 let decoded = decoded.trim();
                 if !decoded.is_empty() {
@@ -1917,16 +1920,16 @@ fn extract_from_content_disposition(headers: &reqwest::header::HeaderMap) -> Opt
                 // percent-encoded sequences, try URL-decoding it so that
                 // `%E6%B0%B8%E7%94%9F.mp4` becomes `永生.mp4`.
                 if name.contains('%')
-                    && let Ok(decoded) = urlencoding_decode(name)
+                    && let Ok(decoded) =
+                        percent_decode_bytes_with_charset(&latin1_bytes(name), None)
                 {
                     let decoded = decoded.trim();
                     if !decoded.is_empty() && decoded != name {
                         return Some(sanitize_filename(decoded));
                     }
                 }
-                let raw_bytes: Vec<u8> = name.chars().map(|ch| (ch as u32 & 0xff) as u8).collect();
-                let decoded =
-                    decode_bytes_with_charset(&raw_bytes, None).unwrap_or_else(|_| name.to_owned());
+                let decoded = decode_bytes_with_charset(&latin1_bytes(name), None)
+                    .unwrap_or_else(|_| name.to_owned());
                 return Some(sanitize_filename(&decoded));
             }
         }
@@ -2059,8 +2062,24 @@ fn urlencoding_decode(s: &str) -> Result<String, String> {
 /// 解码 URL / `Content-Disposition` 中的百分号转义，并在声明了字符集时
 /// 使用声明的字符集。未声明字符集时保留 UTF-8 → GBK/Big5 的兼容探测。
 fn urlencoding_decode_with_charset(s: &str, charset: Option<&str>) -> Result<String, String> {
-    let mut result = Vec::with_capacity(s.len());
-    let bytes = s.as_bytes();
+    percent_decode_bytes_with_charset(s.as_bytes(), charset)
+}
+
+/// 把 Latin-1 载体字符串（每个 char 的码位 = 原始字节值）还原为原始字节。
+///
+/// 只用于 `extract_from_content_disposition`：响应头按 RFC 7230 是字节序列，
+/// 这里用 `byte as char` 承载以便按 ASCII 结构切分，取值前必须还原。
+fn latin1_bytes(carrier: &str) -> Vec<u8> {
+    carrier.chars().map(|ch| (ch as u32 & 0xff) as u8).collect()
+}
+
+/// 字节级百分号解码 + 字符集解码：`bytes` 是待解码的原始字节（可含字面的
+/// 非 ASCII 字节），`%XX` 展开后整体交给 [`decode_bytes_with_charset`]。
+fn percent_decode_bytes_with_charset(
+    bytes: &[u8],
+    charset: Option<&str>,
+) -> Result<String, String> {
+    let mut result = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%'
@@ -4465,13 +4484,49 @@ mod tests {
 
     #[test]
     fn extract_from_content_disposition_raw_big5_bytes() {
-        let raw: &[u8] = b"attachment; filename=\"\xA4\xA4\xA4\xE5.txt\"";
+        let headers = make_headers_with_raw_cd(b"attachment; filename=\"\xA4\xA4\xA4\xE5.txt\"");
+        let name = extract_from_content_disposition(&headers);
+        assert_eq!(name.as_deref(), Some("中文.txt"));
+    }
+
+    fn make_headers_with_raw_cd(raw: &[u8]) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
         let value = reqwest::header::HeaderValue::from_bytes(raw)
             .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("attachment"));
         headers.insert(reqwest::header::CONTENT_DISPOSITION, value);
-        let name = extract_from_content_disposition(&headers);
-        assert_eq!(name.as_deref(), Some("中文.txt"));
+        headers
+    }
+
+    #[test]
+    fn extract_from_content_disposition_raw_utf8_in_filename_star() {
+        // 非标准但常见：filename* 的 ext-value 直接塞原始 UTF-8 字节而非 %XX。
+        // 回归：Latin-1 载体若经 str::as_bytes 二次编码会得到 "ä¸\u{ad}æ__.txt"。
+        let headers =
+            make_headers_with_raw_cd(b"attachment; filename*=UTF-8''\xe4\xb8\xad\xe6\x96\x87.txt");
+        assert_eq!(
+            extract_from_content_disposition(&headers).as_deref(),
+            Some("中文.txt")
+        );
+    }
+
+    #[test]
+    fn extract_from_content_disposition_raw_utf8_mixed_with_percent() {
+        // 原始 UTF-8 字节与 %20 混排：percent 分支也必须先还原原始字节。
+        let headers =
+            make_headers_with_raw_cd(b"attachment; filename=\"\xe4\xb8\xad\xe6\x96\x87%20a.txt\"");
+        assert_eq!(
+            extract_from_content_disposition(&headers).as_deref(),
+            Some("中文 a.txt")
+        );
+    }
+
+    #[test]
+    fn extract_from_content_disposition_raw_gbk_with_declared_charset() {
+        let headers = make_headers_with_raw_cd(b"attachment; filename*=GBK''\xce\xc4\xbc\xfe.txt");
+        assert_eq!(
+            extract_from_content_disposition(&headers).as_deref(),
+            Some("文件.txt")
+        );
     }
 
     // -----------------------------------------------------------------------

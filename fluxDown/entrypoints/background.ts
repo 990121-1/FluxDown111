@@ -3219,12 +3219,18 @@ export default defineBackground(() => {
     return undefined;
   }
 
+  // 写成 \u{...} 转义而非字面字符：假名/CJK/私用区字符在编辑器与格式化
+  // 工具里容易被当成不可见字符吞掉，区间端点一旦丢失就退化成匹配连字符。
+  const KANA_RE = /[\u{3040}-\u{30ff}]/u;
+  const CJK_RE = /[\u{4e00}-\u{9fff}]/u;
+  const PUA_RE = /[\u{e000}-\u{f8ff}]/u;
+
   function filenameEncodingScore(value: string): number {
     let score = 0;
     for (const ch of value) {
       if (/\p{Cc}/u.test(ch)) score -= 8;
-      else if (/[぀-ヿ]/u.test(ch)) score -= 5;
-      else if (/[一-鿿]/u.test(ch)) score += 2;
+      else if (KANA_RE.test(ch)) score -= 5;
+      else if (CJK_RE.test(ch)) score += 2;
       else if (ch === "\ufffd") score -= 10;
     }
     return score;
@@ -3234,10 +3240,18 @@ export default defineBackground(() => {
     return [...value].some(
       (ch) =>
         /\p{Cc}/u.test(ch) ||
-        /[぀-ヿ]/u.test(ch) ||
-        /[-]/u.test(ch) ||
+        KANA_RE.test(ch) ||
+        PUA_RE.test(ch) ||
         ch === "\ufffd",
     );
+  }
+
+  function tryDecode(bytes: Uint8Array, label: LegacyFilenameCharset): string | null {
+    try {
+      return new TextDecoder(label, { fatal: true }).decode(bytes);
+    } catch {
+      return null;
+    }
   }
 
   function decodeBytesUtf8OrChineseLegacy(
@@ -3245,43 +3259,20 @@ export default defineBackground(() => {
     charset?: string,
   ): string | null {
     const preferred = normalizeLegacyFilenameCharset(charset);
-    if (preferred === "gbk") {
-      try {
-        return new TextDecoder("gbk", { fatal: true }).decode(bytes);
-      } catch {
-        return null;
-      }
-    }
-    if (preferred === "big5") {
-      try {
-        return new TextDecoder("big5", { fatal: true }).decode(bytes);
-      } catch {
-        return null;
-      }
+    if (preferred === "gbk" || preferred === "big5") {
+      // 显式声明的字符集优先；解码失败返回 null，由调用方决定是否回退到
+      // 下一个 filename 参数（与 Rust 引擎 extract_from_content_disposition 一致）。
+      return tryDecode(bytes, preferred);
     }
 
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      // A mislabeled UTF-8 filename may still contain legacy Chinese bytes.
-      // Keep the compatibility fallback below for that non-conforming case.
-    }
-
-    let gbk: string | null = null;
-    let big5: string | null = null;
-    try {
-      gbk = new TextDecoder("gbk", { fatal: true }).decode(bytes);
-    } catch {
-      // fallthrough
-    }
-    try {
-      big5 = new TextDecoder("big5", { fatal: true }).decode(bytes);
-    } catch {
-      // fallthrough
-    }
-
-    if (!gbk) return big5;
-    if (!big5) return gbk;
+    const utf8 = tryDecode(bytes, "utf-8");
+    if (utf8 !== null) return utf8;
+    // A mislabeled UTF-8 filename may still contain legacy Chinese bytes.
+    // Keep the compatibility fallback below for that non-conforming case.
+    const gbk = tryDecode(bytes, "gbk");
+    const big5 = tryDecode(bytes, "big5");
+    if (gbk === null) return big5;
+    if (big5 === null) return gbk;
     return hasStrongLegacyMojibake(gbk) &&
       filenameEncodingScore(big5) > filenameEncodingScore(gbk)
       ? big5
@@ -3329,19 +3320,21 @@ export default defineBackground(() => {
    *   产生重音拉丁字母乱码。
    *
    * 纯 ASCII 值直接返回，避免无谓的字节往返；否则按字节展开
-   * （percent-decode + Latin-1 还原）后用 UTF-8/GBK/Big5 解码，失败则回退原值。
+   * （percent-decode + Latin-1 还原）后用 UTF-8/GBK/Big5 解码。
+   * 解码失败返回 `null`（显式 charset 解码失败或候选编码全部不接受该字节），
+   * 由调用方决定回退到原值还是下一个 filename 参数。
    */
   function decodeDispositionFilenameValue(
     raw: string,
     charset?: string,
-  ): string {
+  ): string | null {
     const trimmed = raw.trim();
     if (!trimmed || !/[%\u0080-\uffff]/.test(trimmed)) {
       return trimmed;
     }
     const bytes = percentDecodeToBytes(trimmed);
     const decoded = decodeBytesUtf8OrChineseLegacy(bytes, charset);
-    return decoded && decoded.trim() ? decoded : trimmed;
+    return decoded && decoded.trim() ? decoded : null;
   }
 
   /**
@@ -3373,8 +3366,10 @@ export default defineBackground(() => {
     // 优先尝试 filename*（RFC 5987 编码：charset'lang'percent-encoded-name）。
     // charset 字段优先决定解码方式；未声明或声明不可靠时使用 UTF-8 优先、
     // GBK/Big5 候选探测，与 filename= 分支及 Rust 引擎保持一致。
+    // charset 只允许 token 字符，避免在畸形头（`filename*=x.txt; note=a'b'c`）
+    // 上跨参数边界匹配；声明字符集解码失败时回退到 filename=（同 Rust 侧）。
     const starMatch = disposition.match(
-      /filename\*\s*=\s*"?([^']*)'[^']*'([^;"]+)"?/i,
+      /filename\*\s*=\s*"?([A-Za-z0-9_\-]*)'[^';"]*'([^;"]+)"?/i,
     );
     if (starMatch) {
       const decoded = decodeDispositionFilenameValue(
@@ -3387,15 +3382,14 @@ export default defineBackground(() => {
     // 再尝试 filename="..."（带引号）
     const quotedMatch = disposition.match(/filename\s*=\s*"(.+?)"/i);
     if (quotedMatch) {
-      return decodeDispositionFilenameValue(quotedMatch[1]);
+      return decodeDispositionFilenameValue(quotedMatch[1]) ?? quotedMatch[1].trim();
     }
 
     // 最后尝试 filename=...（无引号）
     const plainMatch = disposition.match(/filename\s*=\s*([^\s;]+)/i);
     if (plainMatch) {
-      return decodeDispositionFilenameValue(
-        stripSurroundingQuotes(plainMatch[1]),
-      );
+      const plain = stripSurroundingQuotes(plainMatch[1]);
+      return decodeDispositionFilenameValue(plain) ?? plain;
     }
 
     return "";
