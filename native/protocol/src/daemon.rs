@@ -1707,7 +1707,11 @@ pub struct SiteAuthEntryDto {
     pub user: String,
 }
 
-/// 单站点 HTTP Basic 凭据详情；仅由受保护的定向查询返回。
+/// 单站点 HTTP Basic 凭据详情；仅由受保护的定向查询返回（`GET
+/// /api/v1/site-auth/{site}`，须管理 token）。`pass` 是明文密码，不脱敏
+/// ——保留是为了编辑表单可以回填原值；只应用于「打开编辑对话框」这类需要
+/// 原文的场景，不要在列表/日志里回显（L-1；列表接口 [`SiteAuthEntryDto`]
+/// 本就不含 `pass`）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]

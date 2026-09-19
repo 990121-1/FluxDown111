@@ -27,6 +27,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use fluxdown_api::auth::{TokenCell, check_management_auth, constant_time_eq};
 use fluxdown_api::service::ApiError;
+use fluxdown_engine::auth::is_sensitive_config_key;
 use fluxdown_engine::components::{
     ffmpeg_status, install_ffmpeg, install_ytdlp, list_versions, list_ytdlp_versions,
     uninstall_ffmpeg, uninstall_ytdlp, ytdlp_status,
@@ -407,13 +408,21 @@ async fn get_config(State(state): State<ServerState>) -> Result<Response, ApiErr
 /// 其余 `local_server_*` 键仍是重启生效。
 #[utoipa::path(put, path = "/api/v1/config", tag = "server",
     request_body = HashMap<String, String>,
-    responses((status = 200, description = "已持久化并应用")),
+    responses(
+        (status = 200, description = "已持久化并应用"),
+        (status = 400, description = "含插件/站点认证凭据键，须改走专用端点写入", body = fluxdown_protocol::daemon::ResultMessage),
+    ),
     security(("bearer_token" = []), ("api_key" = []))
 )]
 async fn put_config(
     State(state): State<ServerState>,
     axum::Json(mut entries): axum::Json<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
+    if entries.keys().any(|key| is_sensitive_config_key(key)) {
+        return Err(ApiError::BadRequest(
+            "config 键包含插件/站点认证凭据命名空间；请改用 /api/v1/plugins/{identity}/auth 或 /api/v1/site-auth".into(),
+        ));
+    }
     if let Some(next) = entries.get_mut("local_server_token") {
         // 先归一化再校验并落库：库里存了带空白的值、内存 cell 存去空白的值，
         // 会在下次重启时神不知鬼不觉地换掉密钥。
@@ -426,7 +435,6 @@ async fn put_config(
         validate_access_key(&trimmed).map_err(|msg| ApiError::BadRequest(msg.to_string()))?;
         *next = trimmed;
     }
-    entries.retain(|key, _| !is_sensitive_config_key(key));
     let keys: Vec<String> = entries.keys().cloned().collect();
     for (key, value) in &entries {
         state
@@ -455,19 +463,6 @@ async fn put_config(
         });
     }
     Ok(axum::Json(serde_json::json!({ "success": true, "message": "applied" })).into_response())
-}
-
-fn is_sensitive_config_key(key: &str) -> bool {
-    if matches!(key, "plugin_auth_profiles" | "site_auth_credentials") {
-        return true;
-    }
-    let Some(rest) = key.strip_prefix("plugin.") else {
-        return false;
-    };
-    let Some((identity, site)) = rest.split_once(".auth.") else {
-        return false;
-    };
-    !identity.is_empty() && identity.contains('@') && !site.is_empty()
 }
 
 /// 立即刷新 BT Tracker 订阅：同步拉取全部订阅源、去重、写回缓存并失效当前

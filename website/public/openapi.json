@@ -2281,6 +2281,7 @@
           "management"
         ],
         "summary": "读取单个站点凭据详情。只允许按站点定向读取，不进入通用配置快照。",
+        "description": "**`pass` 字段是明文密码**（未脱敏）：仅供编辑对话框回填原值，调用方不应\n在列表页/日志里回显；列表接口 [`api_list_site_auth`] 本就不含密码（L-1）。",
         "operationId": "api_get_site_auth",
         "parameters": [
           {
@@ -2295,7 +2296,7 @@
         ],
         "responses": {
           "200": {
-            "description": "站点凭据详情",
+            "description": "站点凭据详情；pass 为明文密码，仅用于编辑表单回填，不要在列表/日志中回显",
             "content": {
               "application/json": {
                 "schema": {
@@ -4131,6 +4132,14 @@
           "identity": {
             "type": "string"
           },
+          "loadError": {
+            "type": "string",
+            "description": "加载失败的可读原因；成功时为空。"
+          },
+          "loadStatus": {
+            "type": "string",
+            "description": "`Loaded` / `Failed`；与 `enabled` 独立，手动禁用的插件仍可能已加载。"
+          },
           "name": {
             "type": "string"
           },
@@ -4827,7 +4836,7 @@
       },
       "SiteAuthCredentialDto": {
         "type": "object",
-        "description": "单站点 HTTP Basic 凭据详情；仅由受保护的定向查询返回。",
+        "description": "单站点 HTTP Basic 凭据详情；仅由受保护的定向查询返回（`GET\n/api/v1/site-auth/{site}`，须管理 token）。`pass` 是明文密码，不脱敏\n——保留是为了编辑表单可以回填原值；只应用于「打开编辑对话框」这类需要\n原文的场景，不要在列表/日志里回显（L-1；列表接口 [`SiteAuthEntryDto`]\n本就不含 `pass`）。",
         "required": [
           "site",
           "user",

@@ -38,6 +38,7 @@ use fluxdown_protocol::daemon::{
 #[cfg(hub_link)]
 use std::time::Duration;
 
+use fluxdown_engine::auth::is_sensitive_config_key;
 use fluxdown_engine::db::Db;
 use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec, ResolvePreviewOutcome};
 #[cfg(hub_link)]
@@ -1122,19 +1123,6 @@ impl ApiHost for HubApiHost {
             .await
             .map_err(map_link_err)
     }
-}
-
-fn is_sensitive_config_key(key: &str) -> bool {
-    if matches!(key, "plugin_auth_profiles" | "site_auth_credentials") {
-        return true;
-    }
-    let Some(rest) = key.strip_prefix("plugin.") else {
-        return false;
-    };
-    let Some((identity, site)) = rest.split_once(".auth.") else {
-        return false;
-    };
-    !identity.is_empty() && identity.contains('@') && !site.is_empty()
 }
 
 /// 引擎 `link::DiscoveredPeer` → wire DTO（`kind` → `source` 小写字符串）。

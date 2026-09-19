@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use fluxdown_api::service::{ApiError, ApiHost, LiveSpeed, TaskEvent};
+use fluxdown_engine::auth::is_sensitive_config_key;
 use fluxdown_engine::db::Db;
 use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec};
 use fluxdown_engine::link::{DiscoveredPeer, DiscoveryKind, LinkError, LinkManager, WireHello};
@@ -1064,19 +1065,6 @@ impl ApiHost for ServerApiHost {
             .await
             .map_err(map_link_err)
     }
-}
-
-fn is_sensitive_config_key(key: &str) -> bool {
-    if matches!(key, "plugin_auth_profiles" | "site_auth_credentials") {
-        return true;
-    }
-    let Some(rest) = key.strip_prefix("plugin.") else {
-        return false;
-    };
-    let Some((identity, site)) = rest.split_once(".auth.") else {
-        return false;
-    };
-    !identity.is_empty() && identity.contains('@') && !site.is_empty()
 }
 
 fn normalize_site(input: &str) -> Result<String, ApiError> {

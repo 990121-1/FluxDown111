@@ -1568,10 +1568,13 @@ pub(crate) async fn api_list_site_auth(
 }
 
 /// 读取单个站点凭据详情。只允许按站点定向读取，不进入通用配置快照。
+///
+/// **`pass` 字段是明文密码**（未脱敏）：仅供编辑对话框回填原值，调用方不应
+/// 在列表页/日志里回显；列表接口 [`api_list_site_auth`] 本就不含密码（L-1）。
 #[utoipa::path(get, path = "/api/v1/site-auth/{site}", tag = "management",
     params(("site" = String, Path, description = "host 或 host:port")),
     responses(
-        (status = 200, description = "站点凭据详情", body = SiteAuthCredentialDto),
+        (status = 200, description = "站点凭据详情；pass 为明文密码，仅用于编辑表单回填，不要在列表/日志中回显", body = SiteAuthCredentialDto),
         (status = 404, description = "站点凭据不存在", body = fluxdown_protocol::daemon::ResultMessage),
         (status = 401, description = "token 无效", body = fluxdown_protocol::daemon::ResultMessage),
     ),
