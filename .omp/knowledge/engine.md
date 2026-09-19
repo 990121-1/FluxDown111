@@ -100,13 +100,23 @@
 - **通知平面**：onStart/onDone/onError/onMetaProbed，全 fire-and-forget（失败仅记日志/超时/`try_acquire`，绝不影响任务状态）；仅 onError 内可 `flux.task.requestRetry`。
 - **门控工具面**（manifest `permissions` 声明才注入）：
   - `flux.auth`（`permissions:["auth"]`）：宿主持久化插件认证档案；`save/get/remove` 管理
-    Cookie、Bearer、Basic 或自定义 Header。`flux.fetch` 按显式 `authRef` 或插件+站点默认引用
-    自动注入，认证档案绑定插件和目标站点，过期时隐式引用跳过注入、显式 `authRef` 返回
-    `authentication_required`。档案按 `plugin.<identity>.auth.<site>` 独立配置键保存，卸载插件会清理。
-    `flux.fetch` 返回的同名多值响应头以换行符（`\n`）拼接。
+    Cookie、Bearer、Basic 或自定义 Header。站点键**含 scheme**（`{scheme}://host[:port]`，
+    `auth::site_key`）——同 host 的 http/https 是两个不同站点，https 登录态绝不隐式复用到
+    http 请求（H-3，防明文 MITM 窃取）；裸 host 输入默认按 https 规范化，插件要登记明确
+    允许明文的站点必须自己传 `"http://host"`。`flux.fetch` 按显式 `authRef`（空串视同未传，
+    M-5）或插件+站点默认引用自动注入（仅对声明 `auth` 权限的插件推导默认引用），认证档案
+    绑定插件和目标站点，过期时隐式引用跳过注入、显式 `authRef` 返回 `authentication_required`。
+    档案按 `plugin.<identity>.auth.<site>` 独立配置键保存；旧版整表键 `plugin_auth_profiles`
+    仅作迁移兼容，解析失败时记日志丢弃而非 fail-closed 卡死 save/remove/purge（M-1）。
+    `flux.fetch` 返回的同名多值响应头以换行符（`\n`）拼接。auth 平面独立信号量
+    （容量 2）+独立预算（`auth.timeoutMs` 可选，默认 30s，30s 硬顶），不与 resolve 共享、
+    不计入 resolve 熔断（M-2）。凭据清理只挂用户主动 `uninstall`，安装失败的回滚
+    `purge`（含其内部 `plugin.<id>.` 前缀清理）不删凭据（M-4）。
   - 登录入口（manifest `auth.entry`）：宿主 RPC `daemon.plugin.auth` 以
     `begin`/`poll`/`cancel`/`logout`/`status` 调用 `globalThis.authenticate(ctx)`；插件返回二维码挑战，
-    成功后用 `flux.auth.save` 提交凭据。
+    成功后用 `flux.auth.save` 提交凭据。`logout` 在插件被禁用时也放行——不跑插件 JS，
+    直接走宿主兜底删除凭据（M-3）；`poll` 回包省略 `challenge`/`challengeType` 时客户端
+    保留上一帧。
   - `flux.ffmpeg`/`flux.ffprobe`（`permissions:["ffmpeg"]`）：近乎全量 argv，**封网 + 封越牢路径**（拒 URL scheme/绝对路径/`..`），牢笼 = 产物目录（仅 onDone 类有产物钩子可用），sema=2，300s/1800s 超时。
   - `flux.ytdlp`（`permissions:["ytdlp"]`）：**放行 URL/网络**（本职抓站），封危险开关（`--exec`/`--config-location`/`--plugin-dirs`/`--ffmpeg-location`/`--batch-file`…），bridge 自持 per-plugin scratch 牢笼，宿主注入 `--ffmpeg-location`（受管 ffmpeg 不在 PATH）+ `--cache-dir` 收进牢笼。resolve + 全 hook 可用。
   - `flux.fs`：per-plugin 通用临时文件读写（扁平安全名 + 单文件 8MB/总量 64MB/文件数 100 上限 + unix 0600），取代"每种输入给工具加类型化字段"的反模式。
