@@ -14,6 +14,12 @@
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* Keep extension chrome out of page select-all / copy. Host-page
+   * content is outside this shadow tree and stays selectable.
+   * WXT resets :host with `all: initial !important`, so these
+   * longhands need !important to win. */
+  user-select: none !important;
+  -webkit-user-select: none !important;
 
   /* Dark（默认） */
   --fd-dot-bg: #1e293b;
@@ -97,6 +103,8 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* =========================================================
@@ -248,10 +256,14 @@
   font-size: 13px;
   color: var(--fd-text);
 
-  /* 默认隐藏 */
+  /* Closed: visibility hidden takes the overlay out of page select-all /
+   * copy (issue #305). Its transition is delayed to the end of the opacity
+   * fade so the close animation is preserved; opening flips it to visible
+   * immediately (see .visible). */
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0.2s;
 }
 
 /* 右侧弹出 — 面板在圆点左侧，从右向左展开 */
@@ -275,6 +287,8 @@
 .fluxdown-panel.visible {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s;
 }
 
 /* --- 标题栏 --- */
@@ -820,14 +834,17 @@
   color: var(--fd-text);
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
   transform: scale(0.94) translateY(-4px);
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
 }
 
 .fluxdown-quality-picker.visible {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
   transform: scale(1) translateY(0);
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s;
 }
 
 .fluxdown-quality-picker .qp-header {
@@ -922,12 +939,15 @@
   background: var(--fd-overlay);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.15s ease;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0s linear 0.15s;
 }
 
 .fluxdown-preview-modal.visible {
   opacity: 1;
   pointer-events: auto;
+  visibility: visible;
+  transition: opacity 0.15s ease, visibility 0s;
 }
 
 .fluxdown-preview-card {

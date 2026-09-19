@@ -12,6 +12,7 @@
 
 import { browser } from 'wxt/browser';
 import { defineContentScript } from 'wxt/utils/define-content-script';
+import { createShadowRootUi } from 'wxt/utils/content-script-ui/shadow-root';
 import type { DetectedResource, ResourceType, ConfidenceLevel, TrackPairGroup } from '@/utils/resource-types';
 import { formatFileSize, groupTrackPairs } from '@/utils/resource-types';
 import type { DashManifest } from '@/utils/dash-manifest';
