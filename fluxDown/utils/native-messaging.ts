@@ -444,9 +444,11 @@ async function nmhSendBatchDownloadLegacy(
 
 /**
  * 批量下载：单条 batch_download NMH 消息携带全部条目，取代逐条循环发送。
- * per-item 的 cookies/headers/referrer/fileSize/mimeType 随消息一并送达，
- * 由 Rust 侧按 URL 缓存、在用户于快速下载对话框确认后逐条恢复——不再需要
- * 为每个 URL 单独打一次 NMH 往返（旧实现的性能/时序问题的根因）。
+ * per-item 的 cookies/headers/referrer/fileSize/mimeType/audioUrl 随消息一并
+ * 送达，由 Rust 侧按 URL 缓存、在用户于快速下载对话框确认后逐条恢复
+ * （单条确认 ConfirmExternalDownload 与多条确认 BatchCreateTask 两条路径都
+ * 会回填该缓存）——不再需要为每个 URL 单独打一次 NMH 往返（旧实现的
+ * 性能/时序问题的根因），也不会像早期实现那样静默丢弃 audioUrl。
  *
  * 分块：NMH 与 hub 两端都对单帧强制 1MB 上限，因此按条目 JSON 字节数贪心
  * 切块（见 chunkBatchWireItems），单块 ≤ 700KB；典型批量（数十条）落在

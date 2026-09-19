@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildMediaCandidates,
   countMediaCandidateRows,
+  isMediaCandidateVisible,
   selectQualityVideoTracks,
 } from "./media-candidates";
 import { parseDashXml } from "./dash-manifest";
@@ -337,7 +338,28 @@ describe("buildMediaCandidates", () => {
       .toContain("video-segment");
     expect(candidates.find((candidate) => candidate.source === "fragments")?.fragmentCount)
       .toBe(2);
+    // 页面已有可下载 dash 候选（2 档清晰度）时，孤立分片汇总只是噪声，
+    // 不渲染、不计入角标。
     expect(countMediaCandidateRows(candidates)).toBe(2);
+    const orphans = candidates.find((candidate) => candidate.source === "fragments");
+    expect(orphans && isMediaCandidateVisible(orphans, candidates)).toBe(false);
+  });
+
+  test("MSE 站点未解析到清单时，分片汇总以一条禁用行可见并计入角标", () => {
+    const resources = [
+      resource({ id: "v1", url: "https://cdn.example.com/mse/video/seg-1.m4s", type: "stream" }),
+      resource({ id: "v2", url: "https://cdn.example.com/mse/video/seg-2.m4s", type: "stream" }),
+      resource({ id: "a1", url: "https://cdn.example.com/mse/audio/seg-1.m4s", type: "stream" }),
+    ];
+
+    const candidates = buildMediaCandidates(resources, { fallbackTitle: "Video", manifests: [] });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].source).toBe("fragments");
+    expect(candidates[0].downloadable).toBe(false);
+    expect(candidates[0].rawResourceIds).toEqual(["v1", "v2", "a1"]);
+    expect(isMediaCandidateVisible(candidates[0], candidates)).toBe(true);
+    expect(countMediaCandidateRows(candidates)).toBe(1);
   });
 
   test("备用 CDN 使用相同媒体路径时归入 DASH 候选", () => {

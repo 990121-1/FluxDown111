@@ -246,11 +246,27 @@ export default defineBackground(() => {
     bumpTabVersion(tabManifestVersions, tabId);
   }
 
+  /**
+   * origin+pathname+search（忽略 hash）。Chrome 的 `tabs.onUpdated` 对
+   * fragment 导航（`#comment-123`）和 `history.pushState`/`replaceState`
+   * 都会发出带 `changeInfo.url`、不带 `status` 的事件；同页面播放器点锚点/
+   * 用 replaceState 写回状态时 hash 常变而内容不变，若按原始 URL 整串比较
+   * 会把已嗅探到的分片/清单/认证上下文误判为"换页"而整体清空。
+   */
+  function pageUrlKey(url: string): string {
+    try {
+      const u = new URL(url);
+      return `${u.origin}${u.pathname}${u.search}`;
+    } catch {
+      return url;
+    }
+  }
+
   /** Also catches history.pushState navigations reported by content scripts. */
   function syncTabPageUrl(tabId: number, pageUrl: string): void {
     if (!pageUrl) return;
     const previous = tabPageUrls.get(tabId);
-    if (previous && previous !== pageUrl) clearTabProjection(tabId);
+    if (previous && pageUrlKey(previous) !== pageUrlKey(pageUrl)) clearTabProjection(tabId);
     tabPageUrls.set(tabId, pageUrl);
   }
 
@@ -340,10 +356,7 @@ export default defineBackground(() => {
     }
   });
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.url) {
-      clearTabProjection(tabId);
-      tabPageUrls.set(tabId, changeInfo.url);
-    }
+    if (changeInfo.url) syncTabPageUrl(tabId, changeInfo.url);
   });
 
   // ===== 右键菜单：即使关闭自动拦截也可以手动发送链接到 FluxDown 下载 =====
@@ -3265,9 +3278,12 @@ export default defineBackground(() => {
           }),
         );
 
-        // NMH 的 batch_download 条目与 DownloadRequest 同构并支持 audioUrl。
-        // 只有远程旧版 /download/batch 不支持该字段，路由层才将带音频条目
-        // 降级为远程单条请求；本地批量始终保持一次往返。
+        // NMH 的 batch_download 条目与 DownloadRequest 同构并携带逐条
+        // audioUrl；hub 侧按 URL 缓存该字段，并在快速下载对话框的单条确认
+        // （ConfirmExternalDownload）与多条确认（BatchCreateTask）两条路径下
+        // 都按 URL 回填，故本地批量始终保持一次往返、且不丢音轨。只有远程
+        // 旧版 /download/batch 不支持该字段，路由层才将带音频条目降级为
+        // 远程单条请求（见 remoteSendBatchPreservingAudio）。
         const response = await sendBatchDownloadRequest(batchItems);
         const batchNotifyOk = await shouldNotifyChannel(response.channel);
         if (response.success) {

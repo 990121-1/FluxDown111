@@ -484,7 +484,7 @@ export function buildMediaCandidates(
       );
     const periodCandidates = manifestPeriods(entry.manifest);
     const periodRows: MediaCandidate[] = [];
-    for (const [periodIndex, period] of periodCandidates.entries()) {
+    for (const period of periodCandidates) {
       const audioUrl = bestAudioUrl(period.audio);
       const seenVariantKeys = new Set<string>();
       const variants = selectQualityVideoTracks(period.video).flatMap((track, trackIndex) => {
@@ -506,6 +506,14 @@ export function buildMediaCandidates(
         }];
       });
       if (variants.length === 0) continue;
+      // rawResourceIds/fragmentCount 归第一条【实际 push 成功】的 periodRow，
+      // 而不是按 manifest 里的下标（periodIndex===0）。排在前面的 Period 可能
+      // 因 `variants.length===0` 被跳过（如 SSAI 广告 Period 只有 SegmentTemplate
+      // 占位、无完整轨道 URL），此时用下标判断会让存活候选拿到空
+      // rawResourceIds，而相关资源仍被下方 usedResourceIds 消费——结果是它们
+      // 既不在候选里也不在原始资源列表里，凭空消失一次；等下一轮渲染又会
+      // 因为 usedResourceIds 未命中而作为独立音频/分片行重新冒出，角标数跳变。
+      const isFirstSurvivingPeriod = periodRows.length === 0;
       periodRows.push({
         id: `dash:${manifestKey}:${period.key}`,
         title: baseTitle,
@@ -513,10 +521,10 @@ export function buildMediaCandidates(
         source: "dash",
         pageUrl: options.pageUrl || root?.pageUrl || "",
         variants,
-        rawResourceIds: periodIndex === 0
+        rawResourceIds: isFirstSurvivingPeriod
           ? Array.from(new Set(related.map((resource) => resource.id)))
           : [],
-        fragmentCount: periodIndex === 0
+        fragmentCount: isFirstSurvivingPeriod
           ? related.filter((resource) => isFragmentUrl(resource.url) && !isCompleteFragmentResource(resource)).length
           : 0,
         downloadable: true,
@@ -670,17 +678,34 @@ function safeFilenamePart(value: string): string {
 function variantExtension(variant: MediaCandidateVariant): string {
   if (variant.audioUrl) return "mp4";
   const ext = extractExtension(variant.videoUrl);
-  if (ext === "m3u8" || ext === "mpd") return "ts";
+  // .m3u8 auto 候选走引擎的 HLS 下载器，产物就是 .ts 分片拼接，扩展名 ts 准确。
+  // .mpd auto 候选走引擎 DASH 下载器：下载完音视频轨后 ffmpeg mux 成 mp4
+  // 容器，再 rename 回原文件名（dash_downloader.rs run_dash_download_inner /
+  // mux_audio_video）——若扩展名仍是 ts，用户会拿到一个 .ts 后缀的 MP4 文件。
+  if (ext === "m3u8") return "ts";
+  if (ext === "mpd") return "mp4";
   if (ext === "m4s" || ext === "ts" || !ext) return "mp4";
   return ext;
 }
 
-/** 生成可读且不会把 CDN 分片名暴露给用户的默认任务文件名。 */
+/**
+ * 生成可读且不会把 CDN 分片名暴露给用户的默认任务文件名。
+ *
+ * 同一候选有多档清晰度可选时（本 PR 的核心交付：每档清晰度独立一行 +
+ * 可多选批量下载），把 `variant.label`（`1080p`/`5000kbps` 等稳定标识）
+ * 拼进文件名——否则两档默认文件名完全相同，用户下载后无从分辨哪个是
+ * 哪个（引擎侧 dedup 只会追加 `(1)`，不解决可读性问题）。单档候选
+ * （直链/HLS/DASH auto 等）行为不变。
+ */
 export function candidateFilename(
   candidate: MediaCandidate,
   variant: MediaCandidateVariant,
 ): string {
-  return `${safeFilenamePart(candidate.title)}.${variantExtension(variant)}`;
+  const base = safeFilenamePart(candidate.title);
+  const name = candidate.variants.length > 1
+    ? `${base} ${safeFilenamePart(variant.label)}`
+    : base;
+  return `${name}.${variantExtension(variant)}`;
 }
 
 export function defaultCandidateVariant(
@@ -690,16 +715,30 @@ export function defaultCandidateVariant(
 }
 
 /**
- * 返回候选在资源面板中占用的行数。
+ * 候选是否应在面板/弹窗中占一行。
  *
- * 可下载候选按清晰度/轨道各占一行；不可下载的孤立分片汇总不计入资源数，
- * 因为它们不会出现在用户可操作的资源列表中。
+ * - 可下载候选总是可见。
+ * - 被当前页面强关联清单淘汰的预加载媒体（`source: "ignored"`）永不可见。
+ * - 无法解析出清单的孤立分片汇总（`source: "fragments"`，如 MSE 站点未捕获
+ *   到 manifest）只在整页**没有任何可下载候选**时以一条禁用行展示（checkbox
+ *   禁用 + `panel.videoNeedsManifest` 提示），否则用户会看到面板/角标显示零
+ *   资源，即便页面明明嗅探到了媒体请求；页面已有可下载候选时它只是噪声
+ *   （广告/预加载的零散分片），保持隐藏。
  */
+export function isMediaCandidateVisible(
+  candidate: MediaCandidate,
+  candidates: readonly MediaCandidate[],
+): boolean {
+  if (candidate.downloadable) return true;
+  if (candidate.source !== "fragments") return false;
+  return !candidates.some((other) => other.downloadable);
+}
+
+/** 返回候选在资源面板中占用的行数：可下载候选按清晰度/轨道各占一行，
+ *  可见的不可下载汇总占 1 行（可见性规则见 [`isMediaCandidateVisible`]）。 */
 export function countMediaCandidateRows(candidates: MediaCandidate[]): number {
-  return candidates.reduce(
-    (count, candidate) => count + (
-      candidate.downloadable ? Math.max(candidate.variants.length, 1) : 0
-    ),
-    0,
-  );
+  return candidates.reduce((count, candidate) => {
+    if (!isMediaCandidateVisible(candidate, candidates)) return count;
+    return count + (candidate.downloadable ? Math.max(candidate.variants.length, 1) : 1);
+  }, 0);
 }

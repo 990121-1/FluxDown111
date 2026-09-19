@@ -36,6 +36,7 @@ import type {
 import {
   buildMediaCandidates,
   candidateFilename,
+  isMediaCandidateVisible,
   qualityFrameRateLabel,
   qualityResolutionLabel,
 } from '@/utils/media-candidates';
@@ -925,8 +926,11 @@ function popupAggregatedResourceIds(): Set<string> {
 }
 
 function displayResourceItems(tab: ResourceType | 'all'): Array<DetectedResource | MediaCandidate> {
-  const candidates = popupMediaCandidates().filter(
-    (candidate) => candidate.downloadable && (tab === 'all' || candidate.type === tab),
+  // 可见性规则（含 MSE 无清单页面的禁用汇总行）由 isMediaCandidateVisible 单点定义，
+  // 与 countMediaCandidateRows / 页内面板保持一致。
+  const all = popupMediaCandidates();
+  const candidates = all.filter(
+    (candidate) => isMediaCandidateVisible(candidate, all) && (tab === 'all' || candidate.type === tab),
   );
   const raw = filteredResourcesFor(tab);
   return [...candidates, ...raw];
@@ -1160,7 +1164,10 @@ function popupCandidateVariantLabel(variant: MediaCandidateVariant): string {
   if (variant.label === 'auto') return t('panel.autoQuality');
   if (variant.label === 'original') return t('panel.originalQuality');
   const resolution = qualityResolutionLabel(variant.label);
-  if (!resolution) return t('panel.qualityUnknown');
+  // 无 height 时 variant.label 是 "<bandwidth>kbps" 稳定标识（与内容脚本
+  // candidateVariantLabel 同款回退：不匹配 "<n>p" 就原样展示，避免多档
+  // 无 height 轨道全部塌成同一个「未知画质」）。
+  if (!resolution) return variant.label || t('panel.qualityUnknown');
   const fps = qualityFrameRateLabel(variant.frameRate);
   return fps ? `${resolution} ${fps}` : resolution;
 }

@@ -21,6 +21,7 @@ import {
   buildMediaCandidates,
   candidateFilename,
   defaultCandidateVariant,
+  isMediaCandidateVisible,
   qualityFrameRateLabel,
   qualityResolutionLabel,
   selectQualityVideoTracks,
@@ -875,7 +876,11 @@ export default defineContentScript({
       if (variant.label === 'auto') return t('panel.autoQuality');
       if (variant.label === 'original') return t('panel.originalQuality');
       const resolution = qualityResolutionLabel(variant.label);
-      if (!resolution) return t('panel.qualityUnknown');
+      // 无 height 时 variant.label 是 qualityLabel() 产出的 "<bandwidth>kbps"
+      // 稳定标识（selectQualityVideoTracks 已按它分档）；qualityResolutionLabel
+      // 只认 "<n>p" 格式，匹配不到就原样展示该标识，而不是统一降级成
+      // 「未知画质」（否则多档无 height 轨道会渲染成完全同名、无法区分）。
+      if (!resolution) return variant.label || t('panel.qualityUnknown');
       const fps = qualityFrameRateLabel(variant.frameRate);
       return fps ? `${resolution} ${fps}` : resolution;
     }
@@ -1042,8 +1047,10 @@ export default defineContentScript({
     function mediaCandidatesForTab(tab: string): MediaCandidate[] {
       if (tab !== 'all' && tab !== 'video' && tab !== 'stream') return [];
       const candidates = mediaCandidatesSnapshot();
+      // 可见性规则（含 MSE 无清单页面的禁用汇总行）由 isMediaCandidateVisible
+      // 单点定义，与 countMediaCandidateRows / popup 保持一致。
       return candidates.filter(
-        (candidate) => candidate.downloadable && (tab === 'all' || candidate.type === tab),
+        (candidate) => isMediaCandidateVisible(candidate, candidates) && (tab === 'all' || candidate.type === tab),
       );
     }
 
@@ -1216,7 +1223,7 @@ export default defineContentScript({
         const fps = qualityFrameRateLabel(v.frameRate);
         const quality = resolution
           ? fps ? `${resolution} ${fps}` : resolution
-          : t('panel.qualityUnknown');
+          : rawQuality || t('panel.qualityUnknown');
 
         return {
           quality,

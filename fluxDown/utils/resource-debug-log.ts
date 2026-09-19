@@ -2,8 +2,10 @@
  * Resource sniffer diagnostics export.
  *
  * The export keeps URL paths and parsed media metadata, because those are the
- * facts needed to diagnose aggregation. Credentials in query strings are
- * redacted, and cookies/header values are never serialized.
+ * facts needed to diagnose aggregation. Credentials in query strings and in
+ * path-embedded signed tokens (Akamai-style `hdnts=exp=...~hmac=...` segments,
+ * `/token/<jwt>/...` segments) are redacted, and cookies/header values are
+ * never serialized.
  */
 
 import type { DashManifest } from "./dash-manifest";
@@ -47,8 +49,49 @@ const SENSITIVE_QUERY_KEYS = new Set([
 ]);
 
 function isSensitiveQueryKey(key: string): boolean {
+  // hmac/sig：Akamai `hdnts=exp=…~acl=/*~hmac=…` 的 acl 若含 `/`，URL 解析会把
+  // `hmac=…` 拆成独立路径段，此时子键本身必须能被识别，否则签名原样落盘。
   return SENSITIVE_QUERY_KEYS.has(key.toLowerCase()) ||
-    /(^|[-_])(token|sign|signature|credential|authorization|auth|key.?pair.?id|policy|expires?|access.?token)([-_]|$)/i.test(key);
+    /(^|[-_])(token|sign|sig|signature|hmac|credential|authorization|auth|key.?pair.?id|policy|expires?|access.?token)([-_]|$)/i.test(key);
+}
+
+/**
+ * A base64/hex-style opaque path segment (bearer token, signed cookie, JWT
+ * part) rather than a human filename: long, no filename-style separators
+ * (space/underscore), and either pure hex or mixes case + digits the way
+ * encoded binary does — natural titles this long are near-universally
+ * lowercase-with-separators or carry a recognizable extension.
+ */
+function looksLikeOpaqueToken(segment: string): boolean {
+  if (segment.length < 32 || /[\s_]/.test(segment)) return false;
+  if (!/^[A-Za-z0-9+/-]+$/.test(segment)) return false;
+  if (/^[0-9a-fA-F]+$/.test(segment)) return true;
+  return /[0-9]/.test(segment) && /[a-z]/.test(segment) && /[A-Z]/.test(segment);
+}
+
+/**
+ * Redact a signed-token path segment. Two shapes seen in the wild:
+ * - Akamai-style `key=value[~key=value...]` blob (`hdnts=exp=...~hmac=...`).
+ *   Any sensitive sub-key (leading `hdnts=` or inner `hmac=`) redacts the whole
+ *   blob: the acl sub-value may contain `/`, in which case URL parsing splits
+ *   the blob across several path segments and the `hmac=...` tail lands in a
+ *   segment of its own, so the leading key alone cannot be relied upon.
+ * - A bare JWT (three dot-joined base64url parts) or a long base64/hex run
+ *   embedded directly in the path, e.g. `/token/<jwt>/seg.m4s`.
+ */
+function redactPathSegment(segment: string): string {
+  if (!segment) return segment;
+  if (segment.includes("=")) {
+    const sensitive = segment.split("~").some((part) => {
+      const eq = part.indexOf("=");
+      return eq > 0 && isSensitiveQueryKey(part.slice(0, eq).replace(/^[^A-Za-z0-9]+/, ""));
+    });
+    return sensitive ? "[REDACTED]" : segment;
+  }
+  if (/^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(segment)) {
+    return "[REDACTED]";
+  }
+  return looksLikeOpaqueToken(segment) ? "[REDACTED]" : segment;
 }
 
 export function redactUrl(url: string | undefined): string {
@@ -58,6 +101,7 @@ export function redactUrl(url: string | undefined): string {
     for (const key of [...parsed.searchParams.keys()]) {
       if (isSensitiveQueryKey(key)) parsed.searchParams.set(key, "[REDACTED]");
     }
+    parsed.pathname = parsed.pathname.split("/").map(redactPathSegment).join("/");
     return parsed.toString();
   } catch {
     return url;
