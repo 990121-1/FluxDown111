@@ -3,8 +3,8 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/material.dart' show SelectableText;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
@@ -461,6 +461,7 @@ class _PluginCard extends StatelessWidget {
   void _showLoadError(BuildContext context) {
     final s = currentS;
     final c = AppColors.of(context);
+    final m = AppMetrics.of(context);
     showShadDialog(
       context: context,
       barrierColor: c.dialogBarrier,
@@ -469,7 +470,6 @@ class _PluginCard extends StatelessWidget {
       builder: (ctx) => ShadDialog(
         title: Text(s.pluginLoadErrorTitle),
         description: Text(s.pluginLoadErrorBody),
-        child: Text(plugin.loadError),
         actions: [
           ShadButton.outline(
             onPressed: () => Navigator.of(ctx).pop(),
@@ -479,13 +479,26 @@ class _PluginCard extends StatelessWidget {
             onPressed: () {
               Clipboard.setData(ClipboardData(text: plugin.loadError));
               Navigator.of(ctx).pop();
-              FluxSonner.of(context).show(
-                ShadToast(title: Text(s.pluginLoadErrorCopied)),
-              );
+              FluxSonner.of(
+                context,
+              ).show(ShadToast(title: Text(s.pluginLoadErrorCopied)));
             },
             child: Text(s.pluginLoadErrorCopy),
           ),
         ],
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 240),
+          child: SingleChildScrollView(
+            child: DefaultSelectionStyle(
+              selectionColor: m.soft(c.accent),
+              cursorColor: c.accent,
+              child: SelectableText(
+                plugin.loadError,
+                style: TextStyle(fontSize: 12, color: c.textSecondary),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -604,7 +617,8 @@ class _PluginCard extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               ShadSwitch(
-                value: plugin.enabled,
+                enabled: !loadFailed,
+                value: plugin.enabled && !loadFailed,
                 onChanged: loadFailed
                     ? null
                     : (v) => provider.setEnabled(plugin.identity, v),
@@ -624,13 +638,17 @@ class _PluginCard extends StatelessWidget {
                   ),
                 ),
               if (!loadFailed && plugin.authSupported)
-                ShadIconButton.ghost(
-                  icon: Icon(
-                    LucideIcons.logIn,
-                    size: 16,
-                    color: c.textSecondary,
+                ShadTooltip(
+                  effects: const [],
+                  builder: (_) => Text(s.pluginAuthButton),
+                  child: ShadIconButton.ghost(
+                    icon: Icon(
+                      LucideIcons.logIn,
+                      size: 16,
+                      color: c.textSecondary,
+                    ),
+                    onPressed: onAuth,
                   ),
-                  onPressed: onAuth,
                 ),
               ShadIconButton.ghost(
                 icon: Icon(LucideIcons.trash2, size: 16, color: AppColors.red),
@@ -659,16 +677,23 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
   String _sessionId = '';
   String _authRef = '';
   String _site = '';
+  String _input = '';
   String _status = '';
   String _challenge = '';
   String _challengeType = '';
   String _message = '';
-  // 对话框打开即查询登录态；首帧不能先显示“开始登录”按钮。
+  String _lastAction = '';
+  // 对话框打开即查询登录态，首帧显示 loading 而非按钮。
   bool _busy = true;
-  bool _initialAuthCheck = true;
-  bool _autoBeginAttempted = false;
+  // 当前在途请求是否来自后台自动轮询：轮询不得锁定输入框/操作按钮。
+  bool _autoPoll = false;
+  bool _cancelSent = false;
   Timer? _pollTimer;
   Timer? _siteStatusTimer;
+
+  /// 由用户主动动作（begin/poll 点击、logout、切换站点）触发、仍在等待引擎
+  /// 回包的状态；后台自动轮询不计入，避免每 2 秒把输入框/按钮锁一次。
+  bool get _controlsBusy => _busy && !_autoPoll;
 
   @override
   void initState() {
@@ -683,6 +708,10 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
     widget.provider.removeListener(_onProviderChanged);
     _pollTimer?.cancel();
     _siteStatusTimer?.cancel();
+    // Esc / 遮罩 / 关闭按钮都走这里：还有会话挂着就通知引擎释放，
+    // 避免插件侧的轮询状态一直挂到超时（显式「取消」按钮已在 _cancel 里发过，
+    // _cancelSent 去重，这里不会重复发送）。
+    _sendCancelIfPending();
     super.dispose();
   }
 
@@ -691,44 +720,54 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
     _lastSeq = widget.provider.authResultSeq;
     final result = widget.provider.lastAuthResult;
     if (result == null || result.identity != widget.plugin.identity) return;
-    final shouldAutoBegin =
-        _initialAuthCheck &&
-        !_autoBeginAttempted &&
-        result.status == 'error' &&
-        result.sessionId.isEmpty &&
-        result.message.isEmpty;
-    _initialAuthCheck = false;
-    setState(() {
-      // 未登录时立即衔接 begin，避免中间一帧显示“开始登录”按钮。
-      _busy = shouldAutoBegin;
-      _status = result.status;
-      _sessionId = result.status == 'pending' ? result.sessionId : '';
-      _authRef = result.status == 'success' ? result.authRef : '';
-      _challenge = result.challenge;
-      _challengeType = result.challengeType;
-      _message = result.message;
-    });
-    if (shouldAutoBegin) {
-      _autoBeginAttempted = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        // 在同一个回调中释放 status 的 busy，再立刻发起 begin，
-        // 中间不让 Flutter 绘制出开始登录按钮。
-        setState(() => _busy = false);
-        _submit();
-      });
+    // 会话已经切换（取消旧会话后立即发起新一轮）：丢弃旧会话的迟到响应，
+    // 避免多插件/多会话信号串扰。
+    if (_sessionId.isNotEmpty &&
+        result.sessionId.isNotEmpty &&
+        result.sessionId != _sessionId) {
+      return;
     }
-    if (result.status == 'pending' &&
-        result.challengeType.toLowerCase() == 'qrcode') {
+    final wasLogout = _lastAction == 'logout';
+    setState(() {
+      _busy = false;
+      _autoPoll = false;
+      _status = result.status;
+      _message = result.message;
+      _cancelSent = false;
+      if (wasLogout) {
+        // 引擎侧无论 logout 成功与否都已删除档案：本地登录态一并清空，
+        // 否则 authRef 残留会让「注销」按钮继续显示，用户回不到登录态。
+        _authRef = '';
+        _sessionId = '';
+        _challenge = '';
+        _challengeType = '';
+      } else {
+        _sessionId = result.status == 'pending' ? result.sessionId : '';
+        _authRef = result.status == 'success' ? result.authRef : '';
+        // challenge/challengeType 在协议上是可选字段：pending 轮询回包省略
+        // 时保留上一帧，避免二维码在第一次 poll 后消失。
+        if (result.status == 'pending') {
+          if (result.challenge.isNotEmpty) _challenge = result.challenge;
+          if (result.challengeType.isNotEmpty) {
+            _challengeType = result.challengeType;
+          }
+        } else {
+          _challenge = result.challenge;
+          _challengeType = result.challengeType;
+        }
+      }
+    });
+    if (_status == 'pending' && _challengeType.toLowerCase() == 'qrcode') {
       _startPolling();
-    } else if (result.status != 'pending') {
+    } else {
       _pollTimer?.cancel();
     }
   }
 
   void _refreshSavedAuth() {
     if (!mounted) return;
-    if (!_busy) setState(() => _busy = true);
+    _lastAction = 'status';
+    setState(() => _busy = true);
     widget.provider.authenticate(
       identity: widget.plugin.identity,
       action: 'status',
@@ -738,32 +777,51 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
 
   void _onSiteChanged(String value) {
     _site = value;
+    if (_sessionId.isNotEmpty) {
+      _sendCancelIfPending();
+      _pollTimer?.cancel();
+      setState(() {
+        _sessionId = '';
+        _challenge = '';
+        _challengeType = '';
+        _status = '';
+      });
+    }
     _siteStatusTimer?.cancel();
-    _siteStatusTimer = Timer(const Duration(milliseconds: 350), _refreshSavedAuth);
+    _siteStatusTimer = Timer(
+      const Duration(milliseconds: 350),
+      _refreshSavedAuth,
+    );
   }
 
   void _startPolling() {
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (!mounted || _busy || _sessionId.isEmpty) return;
-      _submit();
+      _submit(auto: true);
     });
   }
 
-  void _submit() {
+  void _submit({bool auto = false}) {
     if (_busy) return;
-    setState(() => _busy = true);
+    _lastAction = _sessionId.isEmpty ? 'begin' : 'poll';
+    setState(() {
+      _busy = true;
+      _autoPoll = auto;
+    });
     widget.provider.authenticate(
       identity: widget.plugin.identity,
-      action: _sessionId.isEmpty ? 'begin' : 'poll',
+      action: _lastAction,
       site: _site,
       authRef: _authRef,
       sessionId: _sessionId,
+      input: _input,
     );
   }
 
   void _logout() {
     if (_busy) return;
+    _lastAction = 'logout';
     setState(() => _busy = true);
     _pollTimer?.cancel();
     widget.provider.authenticate(
@@ -774,16 +832,21 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
     );
   }
 
+  /// 对当前 pending 会话发一次 cancel（不等待回包）；同一会话只发一次。
+  void _sendCancelIfPending() {
+    if (_sessionId.isEmpty || _cancelSent) return;
+    _cancelSent = true;
+    widget.provider.authenticate(
+      identity: widget.plugin.identity,
+      action: 'cancel',
+      site: _site,
+      authRef: _authRef,
+      sessionId: _sessionId,
+    );
+  }
+
   void _cancel() {
-    if (_sessionId.isNotEmpty) {
-      widget.provider.authenticate(
-        identity: widget.plugin.identity,
-        action: 'cancel',
-        site: _site,
-        authRef: _authRef,
-        sessionId: _sessionId,
-      );
-    }
+    _sendCancelIfPending();
     Navigator.of(context).pop();
   }
 
@@ -816,10 +879,44 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
     return Text(_challenge);
   }
 
+  Color _statusColor(AppColors c) {
+    switch (_status) {
+      case 'success':
+        return AppColors.green;
+      case 'error':
+        return AppColors.red;
+      default:
+        return c.textSecondary;
+    }
+  }
+
+  String _statusLabel(S s) {
+    switch (_status) {
+      case 'pending':
+        return s.pluginAuthPending;
+      case 'success':
+        return s.pluginAuthSuccess;
+      case 'error':
+        return s.pluginAuthFailed(
+          _message.isNotEmpty ? _message : s.pluginAuthInvalidResponse,
+        );
+      case '':
+        return '';
+      default:
+        // 插件返回了 begin/poll/cancel/logout/status 之外的未知 status。
+        return s.pluginAuthInvalidResponse;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = currentS;
     final c = AppColors.of(context);
+    final label = _statusLabel(s);
+    final supplement =
+        (_status == 'pending' || _status == 'success') && _message.isNotEmpty
+        ? _message
+        : '';
     return ShadDialog(
       title: Text(
         _challengeType.toLowerCase() == 'qrcode'
@@ -834,10 +931,16 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
             const SizedBox(height: 8),
             ShadInput(
               placeholder: Text(s.pluginAuthSitePlaceholder),
-              enabled: !_busy,
+              enabled: !_controlsBusy,
               onChanged: _onSiteChanged,
             ),
-            if (_busy && _challenge.isEmpty) ...[
+            const SizedBox(height: 8),
+            ShadInput(
+              placeholder: Text(s.pluginAuthInputPlaceholder),
+              enabled: !_controlsBusy,
+              onChanged: (v) => _input = v,
+            ),
+            if (_busy && !_autoPoll && _challenge.isEmpty) ...[
               const SizedBox(height: 10),
               Text(
                 s.pluginCommonLoading,
@@ -855,38 +958,36 @@ class _PluginAuthDialogState extends State<_PluginAuthDialog> {
                 child: Column(children: [_challengeWidget()]),
               ),
             ],
-            if (_message.isNotEmpty) ...[
+            if (label.isNotEmpty) ...[
               const SizedBox(height: 8),
+              Text(label, style: TextStyle(color: _statusColor(c))),
+            ],
+            if (supplement.isNotEmpty) ...[
+              const SizedBox(height: 4),
               Text(
-                _message,
-                style: TextStyle(
-                  color: _status == 'success'
-                      ? AppColors.green
-                      : _status == 'error'
-                      ? AppColors.red
-                      : c.textSecondary,
-                ),
+                supplement,
+                style: TextStyle(color: c.textSecondary, fontSize: 11),
               ),
             ],
           ],
         ),
       ),
       actions: [
-        if (_authRef.isEmpty && _status != 'pending')
+        if (_authRef.isEmpty)
           ShadButton(
-            onPressed: _busy ? null : _submit,
+            onPressed: _controlsBusy ? null : _submit,
             child: Text(
               _sessionId.isEmpty ? s.pluginAuthBegin : s.pluginAuthPoll,
             ),
           ),
-        if (_sessionId.isNotEmpty && _status == 'pending')
+        if (_sessionId.isNotEmpty)
           ShadButton.outline(
-            onPressed: _busy ? null : _cancel,
+            onPressed: _controlsBusy ? null : _cancel,
             child: Text(s.cancel),
           ),
         if (_authRef.isNotEmpty && _status == 'success')
           ShadButton.outline(
-            onPressed: _busy ? null : _logout,
+            onPressed: _controlsBusy ? null : _logout,
             child: Text(s.pluginAuthLogout),
           ),
       ],
