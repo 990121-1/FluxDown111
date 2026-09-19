@@ -395,7 +395,7 @@ impl ApiHost for HubApiHost {
         }
         let keys: Vec<String> = changes
             .into_keys()
-            .filter(|key| !is_sensitive_config_key(&key))
+            .filter(|key| !is_sensitive_config_key(key))
             .collect();
         self.send_cmd(|ack| ApiCommand::ApplyConfig { keys, ack })
             .await
