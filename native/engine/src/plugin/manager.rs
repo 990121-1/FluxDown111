@@ -23,7 +23,7 @@ use crate::subscription::{
 
 use super::manifest::{
     PERMISSION_AUTH, PERMISSION_FFMPEG, PERMISSION_YTDLP, PluginManifest, SettingField,
-    SettingType, is_safe_relative_path,
+    SettingType, is_safe_relative_path, is_valid_identity,
 };
 use super::quickjs::HARD_TIMEOUT_CEILING;
 use super::runtime::{
@@ -52,6 +52,10 @@ const EXTERNAL_TOOL_HOOK_BUDGET: ExecutionBudget = ExecutionBudget {
     timeout: Duration::from_secs(1830),
     memory_limit_bytes: 32 * 1024 * 1024,
 };
+/// auth 平面默认预算（M-2）：与 resolve 的 manifest.resolvers[0].timeoutMs 完全
+/// 解耦——一个把 resolver 超时调到 500ms 的插件不该连带把登录脚本的墙钟预算
+/// 也压到 500ms。可被 manifest `auth.timeoutMs` 下调，30s 硬顶。
+const DEFAULT_AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 禁用原因（PascalCase 序列化，全文一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +78,25 @@ impl DisabledReason {
             "Manual" => DisabledReason::Manual,
             "CircuitBreaker" => DisabledReason::CircuitBreaker,
             _ => DisabledReason::None,
+        }
+    }
+}
+
+/// 插件加载状态（PascalCase 序列化，全文一致；wire 契约固定为
+/// `"Loaded"`/`"Failed"`，三端客户端按字面量比较，不可改动，见 671#4）。
+/// 单点定义比照同文件 [`DisabledReason`] 的先例：生产端（[`PluginManager::list`]）
+/// 统一从这里取字面量，杜绝散落的字符串字面量漂移。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginLoadStatus {
+    Loaded,
+    Failed,
+}
+
+impl PluginLoadStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Loaded => "Loaded",
+            Self::Failed => "Failed",
         }
     }
 }
@@ -602,8 +625,13 @@ impl PluginManager {
             app_version: self.app_version.clone(),
         };
         // 每次 resolve 都把同一插件/站点映射到稳定认证引用。插件无需把 Cookie
-        // 放进自己的 KV，也无需在每次调用时重新登录。
+        // 放进自己的 KV，也无需在每次调用时重新登录。只对声明了 auth 权限的
+        // 插件填充（M-5）：未授权插件本就会被 `bridge::http_request` 拒绝
+        // 携带显式 authRef（见 `req.auth_allowed`），缺省注入只会让它们在
+        // `ctx.authRef` 里看到一个自己永远用不了的值，与 runtime.rs 文档
+        // 承诺的字段语义不符。
         if req.auth_ref.is_empty()
+            && manifest.has_permission(PERMISSION_AUTH)
             && let Some(auth_ref) = crate::auth::default_auth_ref(identity, &req.url)
         {
             req.auth_ref = auth_ref;
@@ -652,36 +680,16 @@ impl PluginManager {
 
     /// 执行插件平台登录入口。登录状态由插件通过 `flux.auth.save` 写入宿主，
     /// 本方法只负责驱动 begin/poll/cancel/logout/status 并把挑战返回给 UI。
+    ///
+    /// `logout` 是唯一在插件被禁用时也放行的 action（M-3）：禁用插件（手动
+    /// 关闭或被熔断）仍可能留有 Cookie/Bearer 等登录态，用户必须能清掉它，
+    /// 且不需要为此临时重新启用一个已知有问题的插件去跑它的 JS。这种情况下
+    /// 完全不进 JS（禁用插件不该被驱动执行任意脚本），只由宿主兜底删除凭据。
     pub async fn authenticate(
         &self,
         identity: &str,
         mut req: AuthRequest,
     ) -> Result<AuthResult, PluginError> {
-        let (manifest, source, version) = {
-            let snapshot = self.plugins.read().await.clone();
-            let Some(plugin) = snapshot.iter().find(|p| p.manifest.identity == identity) else {
-                return Err(PluginError::Runtime(format!("插件 {identity} 不存在")));
-            };
-            if !plugin.enabled {
-                return Err(PluginError::Runtime(format!("插件 {identity} 未启用")));
-            }
-            if !plugin.manifest.has_permission(PERMISSION_AUTH) {
-                return Err(PluginError::Runtime(format!(
-                    "插件 {identity} 未声明 auth 权限"
-                )));
-            }
-            let Some(source) = plugin.auth_source().await else {
-                return Err(PluginError::Runtime(format!(
-                    "插件 {identity} 未提供 auth 入口"
-                )));
-            };
-            (
-                plugin.manifest.clone(),
-                source,
-                plugin.manifest.version.clone(),
-            )
-        };
-
         if !matches!(
             req.action.as_str(),
             "begin" | "poll" | "cancel" | "logout" | "status"
@@ -690,12 +698,54 @@ impl PluginManager {
                 "auth action 必须是 begin/poll/cancel/logout/status".to_string(),
             ));
         }
+
+        let (manifest, source, version, enabled) = {
+            let snapshot = self.plugins.read().await.clone();
+            let Some(plugin) = snapshot.iter().find(|p| p.manifest.identity == identity) else {
+                return Err(PluginError::Runtime(format!("插件 {identity} 不存在")));
+            };
+            if !plugin.manifest.has_permission(PERMISSION_AUTH) {
+                return Err(PluginError::Runtime(format!(
+                    "插件 {identity} 未声明 auth 权限"
+                )));
+            }
+            let source = plugin.auth_source().await;
+            (
+                plugin.manifest.clone(),
+                source,
+                plugin.manifest.version.clone(),
+                plugin.enabled,
+            )
+        };
+
         if req.auth_ref.is_empty()
             && !req.site.trim().is_empty()
             && let Some(site) = crate::auth::normalize_site(&req.site)
         {
             req.auth_ref = format!("{identity}::{site}");
         }
+
+        if !enabled {
+            if req.action != "logout" {
+                return Err(PluginError::Runtime(format!("插件 {identity} 未启用")));
+            }
+            if req.auth_ref.is_empty() {
+                return Err(PluginError::InvalidOutput(
+                    "logout 需要 authRef 或 site".to_string(),
+                ));
+            }
+            self.bridge.auth_remove(identity, &req.auth_ref).await?;
+            return Ok(AuthResult {
+                status: "success".to_string(),
+                auth_ref: Some(req.auth_ref),
+                ..Default::default()
+            });
+        }
+        let Some(source) = source else {
+            return Err(PluginError::Runtime(format!(
+                "插件 {identity} 未提供 auth 入口"
+            )));
+        };
 
         let values = self.load_setting_values(identity).await;
         for field in &manifest.settings {
@@ -723,7 +773,7 @@ impl PluginManager {
                 req,
                 build_typed_settings_json(&manifest, &values),
                 self.bridge.clone(),
-                self.resolve_budget_for(&manifest),
+                self.auth_budget_for(&manifest),
                 HostContext {
                     auth_permitted: true,
                     ..Default::default()
@@ -977,6 +1027,23 @@ impl PluginManager {
         }
     }
 
+    /// auth 预算：manifest `auth.timeoutMs` 可下调，默认 [`DEFAULT_AUTH_TIMEOUT`]，
+    /// 30s 硬顶。与 [`Self::resolve_budget_for`] 完全独立——不读 resolver 的
+    /// timeoutMs（M-2）。
+    fn auth_budget_for(&self, manifest: &PluginManifest) -> ExecutionBudget {
+        let timeout = manifest
+            .auth
+            .as_ref()
+            .and_then(|a| a.timeout_ms)
+            .map(Duration::from_millis)
+            .unwrap_or(DEFAULT_AUTH_TIMEOUT)
+            .min(HARD_TIMEOUT_CEILING);
+        ExecutionBudget {
+            timeout,
+            memory_limit_bytes: self.resolve_budget.memory_limit_bytes,
+        }
+    }
+
     /// subscription 预算：manifest 可下调默认 resolve 预算。
     fn subscription_budget_for(&self, manifest: &PluginManifest) -> ExecutionBudget {
         let timeout = manifest
@@ -1132,17 +1199,29 @@ impl PluginManager {
         Ok(())
     }
 
-    /// 卸载（用户主动）：删目录 + 清 config 键 + 清任务 resolver 绑定。
+    /// 卸载（用户主动）：删目录 + 清 config 键 + 清任务 resolver 绑定 + 清认证凭据。
     ///
     /// 清绑定 = 对受影响任务批量应用「忽略插件、按原始链接重跑」逃生舱；不清则
     /// 留下 orphaned 绑定，resume 走 fail-closed 报错（见 [`Self::resolve`]）。
+    /// 凭据清理只挂在这里（用户主动卸载），不挂在 [`Self::purge`] 本身
+    /// （M-4）：`purge` 也是安装失败的回滚路径（`install_dev`/
+    /// `finish_install_outcome` 失败时复用），回滚不该连带删掉一个已经登录
+    /// 成功、只是这次升级/覆盖安装失败的插件的凭据。
     pub async fn uninstall(&self, identity: &str) -> Result<(), PluginError> {
         let _ = self.db.clear_tasks_resolver(identity).await;
-        self.purge(identity).await
+        self.purge(identity).await?;
+        if let Err(e) = crate::auth::remove_plugin(&self.db, identity).await {
+            // 只记日志不 `?`：目录/配置键已经清干净，卸载本身已经完成；凭据
+            // 清理失败（如旧版整表损坏——已由 auth::read_legacy_table 兜底，
+            // 这里只剩真正的 db I/O 错误）不该让用户看到卸载报错回滚假象。
+            log_info!("[plugin] 清理插件 {identity} 认证凭据失败（已忽略）: {e:#}");
+        }
+        Ok(())
     }
 
     /// 删目录 + 清 `plugin.<identity>.` 前缀全部 config 键 + 重载。
-    /// 安装回滚复用（与 [`Self::uninstall`] 的差别：**不**清任务绑定）。
+    /// 安装回滚复用（与 [`Self::uninstall`] 的差别：**不**清任务绑定、**不**清
+    /// 认证凭据）。
     async fn purge(&self, identity: &str) -> Result<(), PluginError> {
         // 删安装目录（dev 不删源，仅删配置键）。
         let failed_plugin = self
@@ -1152,10 +1231,10 @@ impl PluginManager {
             .iter()
             .find(|plugin| plugin.identity == identity)
             .map(|plugin| (plugin.dev_mode, plugin.dir.to_path_buf()));
-        let dir = match failed_plugin {
+        let dir = match &failed_plugin {
             Some((true, _)) => None,
-            Some((false, dir)) => Some(dir),
-            None if is_safe_plugin_identity(identity) => Some(self.root.join(identity)),
+            Some((false, dir)) => Some(dir.clone()),
+            None if is_valid_identity(identity) => Some(self.root.join(identity)),
             None => {
                 return Err(PluginError::ManifestInvalid(
                     "插件 identity 非法，拒绝拼接卸载路径".to_string(),
@@ -1167,21 +1246,46 @@ impl PluginManager {
         {
             let _ = tokio::fs::remove_dir_all(&dir).await;
         }
-        for prefix in [
-            format!("plugin.{identity}."),
-            format!("plugin.dev.{identity}"),
-        ] {
-            if let Ok(entries) = self.db.list_config_with_prefix(&prefix).await {
-                for (k, _) in entries {
-                    let _ = self.db.delete_config(&k).await;
+        // config 键清理：identity 不合法时禁止前缀扫描（671#1）。失败插件的
+        // identity 可能来自未通过 validate() 的 manifest，或干脆是扫到的目录
+        // 名（见 `failure_identity`/`FailedPlugin::identity` 文档）——例如插件
+        // 开发者常在插件根目录放一个无 manifest.json 的 "dev" 工作区目录，会
+        // 被当成失败插件、identity 就是字面 "dev"；若仍按 `plugin.{identity}.`
+        // 前缀扫描删除，会精确撞上 `load_all` 用来枚举 dev 插件注册的保留前缀
+        // `plugin.dev.`，把全部 dev 模式插件注册一次性清空。identity 不合法时
+        // 改走精确键删除：只清这个 identity 自己能推导出的固定几个键（有效
+        // identity 的插件从不会有已知设置遗留在失败态——`update_settings` 只
+        // 认 `self.plugins` 里的已加载插件，不合法 identity 不可能有 setting
+        // 键要清）。
+        if is_valid_identity(identity) {
+            for prefix in [
+                format!("plugin.{identity}."),
+                format!("plugin.dev.{identity}"),
+            ] {
+                if let Ok(entries) = self.db.list_config_with_prefix(&prefix).await {
+                    for (k, _) in entries {
+                        // 认证凭据（`plugin.<id>.auth.<site>`）虽然共享这个前缀
+                        // 命名空间，但只能由用户主动 uninstall 清（M-4）——
+                        // purge 是安装回滚复用路径，不该连带删掉已登录成功的
+                        // 凭据。
+                        if crate::auth::is_sensitive_config_key(&k) {
+                            continue;
+                        }
+                        let _ = self.db.delete_config(&k).await;
+                    }
                 }
+                // plugin.dev.<id> 是精确键（无尾点），单独删。
+                let _ = self.db.delete_config(&prefix).await;
             }
-            // plugin.dev.<id> 是精确键（无尾点），单独删。
-            let _ = self.db.delete_config(&prefix).await;
+        } else {
+            for key in [
+                format!("plugin.{identity}.enabled"),
+                format!("plugin.{identity}.disabled_reason"),
+                format!("plugin.dev.{identity}"),
+            ] {
+                let _ = self.db.delete_config(&key).await;
+            }
         }
-        crate::auth::remove_plugin(&self.db, identity)
-            .await
-            .map_err(|e| PluginError::Runtime(format!("清理认证凭据失败: {e:#}")))?;
         self.load_all().await;
         Ok(())
     }
@@ -1333,12 +1437,17 @@ impl PluginManager {
                     .iter()
                     .map(|subscription| subscription.provider_id.clone())
                     .collect(),
-                load_status: "Loaded".to_string(),
+                load_status: PluginLoadStatus::Loaded.as_str().to_string(),
                 load_error: String::new(),
             });
         }
         for p in failed_snapshot.iter() {
-            let (enabled, disabled_reason) = self.plugin_state(&p.identity).await;
+            // enabled 强制 false（671#6）：失败插件从未真正跑起来过，
+            // `plugin_state()` 的「无 enabled 键 = 新装默认启用」缺省语义是为
+            // 已加载插件设计的，套在失败插件上会呈现「加载失败」徽章与
+            // 「已启用」开关同框的矛盾态。disabled_reason 仍如实返回（用户
+            // 手动禁用/熔断的历史原因，供 UI 展示）。
+            let (_, disabled_reason) = self.plugin_state(&p.identity).await;
             let (
                 name,
                 version,
@@ -1381,7 +1490,7 @@ impl PluginManager {
                 version,
                 description,
                 homepage,
-                enabled,
+                enabled: false,
                 dev_mode: p.dev_mode,
                 disabled_reason: disabled_reason.as_str().to_string(),
                 settings,
@@ -1389,8 +1498,8 @@ impl PluginManager {
                 permissions,
                 auth_supported,
                 subscription_provider_ids,
-                load_status: "Failed".to_string(),
-                load_error: p.error.clone(),
+                load_status: PluginLoadStatus::Failed.as_str().to_string(),
+                load_error: truncate_load_error(&p.error),
             });
         }
         out.sort_by(|a, b| a.identity.cmp(&b.identity));
@@ -1469,17 +1578,25 @@ fn failure_identity(dir: &Path, identity_hint: Option<&str>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn is_safe_plugin_identity(identity: &str) -> bool {
-    let Some((author, name)) = identity.split_once('@') else {
-        return false;
-    };
-    !author.is_empty()
-        && !name.is_empty()
-        && !name.contains('@')
-        && [author, name].into_iter().all(|part| {
-            part.chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-        })
+/// `FailedPlugin.error` 的可读渲染上限（671#9）：来源之一是
+/// `manifest.validate()` 的错误文本，会原样插值插件可控的 manifest 字符串
+/// （identity/version/icon 路径等，见 `manifest.rs` 的 `ManifestInvalid`
+/// 消息），未经任何长度上限就会随每次插件列表刷新原样进 `PluginInfo`（bincode
+/// 过 rinf / REST `PluginDto`）并被客户端逐字渲染。截断只在这一处生效——
+/// `list()` 是 `FailedPlugin.error` 唯一的对外读出口。
+const MAX_LOAD_ERROR_LEN: usize = 1024;
+
+fn truncate_load_error(error: &str) -> String {
+    if error.len() <= MAX_LOAD_ERROR_LEN {
+        return error.to_string();
+    }
+    let mut end = MAX_LOAD_ERROR_LEN;
+    while end > 0 && !error.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = error[..end].to_string();
+    truncated.push('…');
+    truncated
 }
 
 /// 取字段生效值：config 存值 → manifest default → None。

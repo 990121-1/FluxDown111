@@ -53,7 +53,8 @@ pub enum PluginEntryKind {
 pub struct ResolveRequest {
     pub task_id: String,
     pub url: String,
-    /// 当前插件对该站点的默认认证引用。插件通常直接使用 `flux.fetch`，
+    /// 当前插件对该站点的默认认证引用；只有声明了 `auth` 权限的插件才会被
+    /// 填充（M-5），未授权插件恒为空串。插件通常直接使用 `flux.fetch`，
     /// bridge 会自动按该引用查找并复用凭据。
     #[serde(default)]
     pub auth_ref: String,

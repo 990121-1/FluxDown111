@@ -414,6 +414,13 @@ fn collect_response_headers(headers: &reqwest::header::HeaderMap) -> HashMap<Str
     result
 }
 
+/// `authRef` 空串视同未提供（M-5）。抽成独立函数只为不依赖网络就能单测：
+/// `http_request` 内联判定需要真实 SSRF 守卫环境才能触发调用，纯逻辑
+/// 判定不需要。
+fn normalize_explicit_auth_ref(auth_ref: Option<String>) -> Option<String> {
+    auth_ref.filter(|value| !value.is_empty())
+}
+
 #[async_trait::async_trait]
 impl PluginBridge for EngineBridge {
     async fn http_request(
@@ -441,6 +448,12 @@ impl PluginBridge for EngineBridge {
             }
         }
 
+        // 空串视同未提供（M-5）：`{"authRef":""}` 反序列化为 `Some("")`，不是
+        // `None`；`ctx.authRef` 本就可能是空串（PluginManager::resolve 对
+        // magnet/ed2k/ftp 等 URL 拿不到站点键时不填充，authenticate() 未传
+        // site 时也是空串），插件把它原样透传给 flux.fetch 不该被当成「显式
+        // 声明了一个空引用」进而 fail-closed。
+        req.auth_ref = normalize_explicit_auth_ref(req.auth_ref);
         let explicit_auth_ref = req.auth_ref.is_some();
         let mut auth_applied = false;
         let auth_ref = req
@@ -1279,13 +1292,24 @@ fn ytdlp_arg_reject_reason(a: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        arg_reject_reason, collect_response_headers, is_globally_routable_unicast, truncate_utf8,
-        validate_ffmpeg_args, validate_ytdlp_args, ytdlp_arg_reject_reason,
+        arg_reject_reason, collect_response_headers, is_globally_routable_unicast,
+        normalize_explicit_auth_ref, truncate_utf8, validate_ffmpeg_args, validate_ytdlp_args,
+        ytdlp_arg_reject_reason,
     };
     use std::net::IpAddr;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap_or_else(|_| panic!("bad ip {s}"))
+    }
+
+    #[test]
+    fn empty_explicit_auth_ref_normalizes_to_none() {
+        assert_eq!(normalize_explicit_auth_ref(Some(String::new())), None);
+        assert_eq!(normalize_explicit_auth_ref(None), None);
+        assert_eq!(
+            normalize_explicit_auth_ref(Some("a@b::https://x.com".to_string())),
+            Some("a@b::https://x.com".to_string())
+        );
     }
 
     #[test]

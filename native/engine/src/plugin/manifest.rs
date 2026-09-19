@@ -177,6 +177,11 @@ pub struct HooksDecl {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthDecl {
     pub entry: String,
+    /// 单次 auth 调用超时（毫秒）。独立于 resolver 的 timeoutMs（M-2：登录轮询
+    /// 与 resolve 分属不同的信号量/预算平面，不共享 resolver 的低超时配置）；
+    /// 未声明时宿主默认 30s，30s 硬顶。
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 /// 插件 manifest。
@@ -368,6 +373,13 @@ impl PluginManifest {
                     "声明 auth.entry 时 permissions 必须包含 auth".to_string(),
                 ));
             }
+            if let Some(t) = a.timeout_ms
+                && t == 0
+            {
+                return Err(PluginError::ManifestInvalid(
+                    "auth timeoutMs 不可为 0".to_string(),
+                ));
+            }
         }
 
         // settings：键唯一 + widget×type 矩阵 + 值域约束。
@@ -532,8 +544,10 @@ pub fn validate_setting_field(f: &SettingField) -> Result<(), PluginError> {
     Ok(())
 }
 
-/// identity 校验：`^[a-z0-9_-]+@[a-z0-9_-]+$`，禁 '.'。
-fn is_valid_identity(s: &str) -> bool {
+/// identity 校验：`^[a-z0-9_-]+@[a-z0-9_-]+$`，禁 '.'。`pub`：`plugin::manager`
+/// 的 `purge` 复用同一判据校验失败插件的 identity 是否安全可用于拼路径/config
+/// 键（671#8：此前 manager.rs 自留了一份逐字重复的 `is_safe_plugin_identity`）。
+pub fn is_valid_identity(s: &str) -> bool {
     let Some((author, name)) = s.split_once('@') else {
         return false;
     };

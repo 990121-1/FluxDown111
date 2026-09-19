@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, DbError};
+use crate::logger::log_warn;
 
 /// 插件认证凭据配置键。
 ///
@@ -25,7 +26,7 @@ pub struct AuthProfile {
     /// 创建该凭据的插件 ID。
     #[serde(default)]
     pub plugin_id: String,
-    /// 站点键（host 或 host:port）。
+    /// 站点键（`{scheme}://{host}[:port]`，见 [`site_key`]）。
     #[serde(default)]
     pub site: String,
     /// 平台账户名，可为空。
@@ -70,6 +71,10 @@ impl AuthProfile {
     }
 
     /// 将通用认证材料注入请求头。插件自定义 headers 优先于自动生成的 Bearer。
+    ///
+    /// 调用方须先用 [`site_key`] 校验 `self.site` 与目标请求同源（含 scheme）——
+    /// 本方法本身不做该判断，只负责字段→请求头的映射（见
+    /// `plugin::bridge::EngineBridge::http_request` 的调用点）。
     pub fn apply_to_headers(&self, headers: &mut HashMap<String, String>) {
         if !self.cookies.is_empty() && !headers.keys().any(|key| key.eq_ignore_ascii_case("cookie"))
         {
@@ -107,20 +112,31 @@ pub fn default_auth_ref(plugin_id: &str, url: &str) -> Option<String> {
     site_key(url).map(|site| format!("{plugin_id}::{site}"))
 }
 
-/// 从 URL 提取 host[:port] 站点键。
+/// 从 URL 提取带 scheme 的站点键：`{scheme}://{host}[:port]`。
+///
+/// scheme 是键的一部分——同一 host 的 http 与 https 是两个不同站点：在
+/// https 页面建立的登录态绝不会被隐式复用到同 host 的 http 请求（H-3：防止
+/// 明文 http 请求把 Cookie/Bearer 暴露给被动 MITM）。插件想显式允许对 http
+/// 站点注入凭据，必须用 `flux.auth.save({site:"http://host"})` 显式声明
+/// http（而不是让宿主替它悄悄补 scheme）。
 pub fn site_key(url: &str) -> Option<String> {
     let parsed = reqwest::Url::parse(url).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https") {
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "http" | "https") {
         return None;
     }
     let host = parsed.host_str()?;
-    match parsed.port() {
-        Some(port) => Some(format!("{host}:{port}")),
-        None => Some(host.to_string()),
-    }
+    let host_port = match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    };
+    Some(format!("{scheme}://{host_port}"))
 }
 
-/// 规范化 UI/插件输入的站点：同时接受完整 URL 与 `host[:port]`。
+/// 规范化 UI/插件输入的站点：接受完整 URL（含 scheme）或裸 `host[:port]`。
+///
+/// 裸 host（不带 scheme）默认按 `https` 处理——这是登录场景的默认安全假设；
+/// 插件要显式登记一个允许明文的站点，必须自己在 `site` 里带上 `http://`。
 pub fn normalize_site(input: &str) -> Option<String> {
     let input = input.trim();
     if input.is_empty() {
@@ -129,32 +145,7 @@ pub fn normalize_site(input: &str) -> Option<String> {
     site_key(input).or_else(|| site_key(&format!("https://{input}")))
 }
 
-/// 从配置中读取认证档案。
-pub async fn load_all(db: &Db) -> Result<BTreeMap<String, AuthProfile>, DbError> {
-    let mut store = BTreeMap::new();
-    for (key, json) in db.list_config_with_prefix("plugin.").await? {
-        if !is_profile_config_key(&key) {
-            continue;
-        }
-        let profile: AuthProfile = serde_json::from_str(&json)
-            .map_err(|error| DbError::InvalidConfig(format!("认证档案 {key} 解析失败: {error}")))?;
-        if !profile.auth_ref.is_empty() {
-            store.insert(profile.auth_ref.clone(), profile);
-        }
-    }
-    if let Some(json) = db.get_config(AUTH_PROFILES_CONFIG_KEY).await?
-        && !json.trim().is_empty()
-    {
-        let legacy: BTreeMap<String, AuthProfile> = serde_json::from_str(&json)
-            .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表解析失败: {error}")))?;
-        for (auth_ref, profile) in legacy {
-            store.entry(auth_ref).or_insert(profile);
-        }
-    }
-    Ok(store)
-}
-
-/// 读取单份认证档案。
+/// 读取单份认证档案（按新格式单键 → 旧版整表兼容键的顺序查找）。
 pub async fn load(db: &Db, auth_ref: &str) -> Result<Option<AuthProfile>, DbError> {
     if let Some(key) = profile_key_for_ref(auth_ref)
         && let Some(json) = db.get_config(&key).await?
@@ -163,15 +154,7 @@ pub async fn load(db: &Db, auth_ref: &str) -> Result<Option<AuthProfile>, DbErro
             .map_err(|error| DbError::InvalidConfig(format!("认证档案 {key} 解析失败: {error}")))?;
         return Ok(Some(profile));
     }
-    let Some(json) = db.get_config(AUTH_PROFILES_CONFIG_KEY).await? else {
-        return Ok(None);
-    };
-    if json.trim().is_empty() {
-        return Ok(None);
-    }
-    let legacy: BTreeMap<String, AuthProfile> = serde_json::from_str(&json)
-        .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表解析失败: {error}")))?;
-    Ok(legacy.get(auth_ref).cloned())
+    Ok(read_legacy_table(db).await?.get(auth_ref).cloned())
 }
 
 /// 写入或替换认证档案。
@@ -193,19 +176,18 @@ pub async fn remove(db: &Db, auth_ref: &str) -> Result<(), DbError> {
 }
 
 /// 卸载插件时删除该插件的全部认证档案，包括旧版整表中的条目。
+///
+/// 只挂在用户主动 [`super::plugin::PluginManager::uninstall`]，不挂在安装
+/// 回滚复用的 `purge`（M-4）：回滚不该连带删掉用户已经登录成功的凭据。
 pub async fn remove_plugin(db: &Db, plugin_id: &str) -> Result<(), DbError> {
     let prefix = format!("plugin.{plugin_id}.auth.");
     for (key, _) in db.list_config_with_prefix(&prefix).await? {
         db.delete_config(&key).await?;
     }
-    let Some(json) = db.get_config(AUTH_PROFILES_CONFIG_KEY).await? else {
-        return Ok(());
-    };
-    if json.trim().is_empty() {
+    let mut legacy = read_legacy_table(db).await?;
+    if legacy.is_empty() {
         return Ok(());
     }
-    let mut legacy: BTreeMap<String, AuthProfile> = serde_json::from_str(&json)
-        .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表解析失败: {error}")))?;
     let auth_prefix = format!("{plugin_id}::");
     legacy.retain(|auth_ref, profile| {
         !auth_ref.starts_with(&auth_prefix) && profile.plugin_id != plugin_id
@@ -231,39 +213,69 @@ fn profile_key_for_ref(auth_ref: &str) -> Option<String> {
     Some(format!("plugin.{plugin_id}.auth.{site}"))
 }
 
-async fn migrate_legacy(db: &Db) -> Result<(), DbError> {
+/// 读取旧版整表并解析为 `auth_ref → profile` 索引。
+///
+/// JSON 损坏时记日志并直接清空该键，视同没有旧数据——该键只是迁移兼容层，
+/// 让它长期卡死 save/remove/purge/uninstall（M-1）远比丢弃一份已经读不出来
+/// 的损坏数据更糟。表不存在或为空同样返回空表，均不算错误。
+async fn read_legacy_table(db: &Db) -> Result<BTreeMap<String, AuthProfile>, DbError> {
     let Some(json) = db.get_config(AUTH_PROFILES_CONFIG_KEY).await? else {
-        return Ok(());
+        return Ok(BTreeMap::new());
     };
     if json.trim().is_empty() {
-        db.delete_config(AUTH_PROFILES_CONFIG_KEY).await?;
+        return Ok(BTreeMap::new());
+    }
+    match serde_json::from_str(&json) {
+        Ok(legacy) => Ok(legacy),
+        Err(error) => {
+            log_warn!("[auth] 旧版认证档案表解析失败，已丢弃: {error}");
+            db.delete_config(AUTH_PROFILES_CONFIG_KEY).await?;
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// 把旧版整表迁移为按认证档案拆分的独立 config 行。
+///
+/// 兼容策略：`plugin_auth_profiles` 整表格式与本文件（`native/engine/src/
+/// auth.rs`）一样，是随插件系统在同一未发布分支（#664）引入的——`main` 上
+/// 从未存在过这张表，因此没有任何已发布版本会带着旧格式站点键升级到本
+/// 版本；这里的迁移与下面的 scheme 补全纯属防御性前向兼容（覆盖已经在用
+/// nightly/dev 构建的测试者），不代表存在需要迁移的生产数据。
+async fn migrate_legacy(db: &Db) -> Result<(), DbError> {
+    let legacy = read_legacy_table(db).await?;
+    if legacy.is_empty() {
         return Ok(());
     }
-    let legacy: BTreeMap<String, AuthProfile> = serde_json::from_str(&json)
-        .map_err(|error| DbError::InvalidConfig(format!("认证档案旧表解析失败: {error}")))?;
     let mut values = BTreeMap::new();
     for (auth_ref, mut profile) in legacy {
-        let Some((plugin_id, site)) = auth_ref.split_once("::") else {
+        let Some((plugin_id, raw_site)) = auth_ref.split_once("::") else {
             return Err(DbError::InvalidConfig(format!(
                 "认证档案 authRef 非法: {auth_ref}"
             )));
         };
         let plugin_id = plugin_id.to_string();
-        let site = site.to_string();
-        let Some(key) = profile_key_for_ref(&auth_ref) else {
+        // H-3 修复前的旧表站点键不含 scheme；统一按 https 补全，与当前
+        // site_key() 格式对齐，否则迁移后按新格式查找不到。
+        let site = if raw_site.contains("://") {
+            raw_site.to_string()
+        } else {
+            format!("https://{raw_site}")
+        };
+        let new_auth_ref = format!("{plugin_id}::{site}");
+        let Some(key) = profile_key_for_ref(&new_auth_ref) else {
             return Err(DbError::InvalidConfig(format!(
                 "认证档案 authRef 非法: {auth_ref}"
             )));
         };
         // 旧表的 map key 才是可查找的权威引用；修复旧版本可能留下的
-        // 空/不一致 profile.authRef 与 pluginId/site，避免迁移后读不到。
-        profile.auth_ref = auth_ref;
+        // 空/不一致 profile.authRef/pluginId，并强制 site 落到补全 scheme
+        // 后的新格式（不能沿用可能仍是旧格式的 profile.site 字段）。
+        profile.auth_ref = new_auth_ref;
         if profile.plugin_id.is_empty() {
             profile.plugin_id = plugin_id;
         }
-        if profile.site.is_empty() {
-            profile.site = site;
-        }
+        profile.site = site;
         let value = serde_json::to_string(&profile)
             .map_err(|error| DbError::InvalidConfig(format!("认证档案序列化失败: {error}")))?;
         values.insert(key, value);
@@ -282,6 +294,17 @@ fn is_profile_config_key(key: &str) -> bool {
     !identity.is_empty() && !identity.contains('.') && identity.contains('@') && !site.is_empty()
 }
 
+/// config 键是否属于敏感的插件认证凭据或站点级 Basic Auth 命名空间。
+///
+/// REST/RPC 只读接口须过滤该类键，写接口须整体拒绝（而非静默丢弃，见
+/// `fluxdown_server`/`hub` 的 `/api/v1/config` 与 aria2 兼容层）。单点定义，
+/// 判据与 [`is_profile_config_key`] 保持一致，供 `server`/`hub` 复用（L-2）。
+pub fn is_sensitive_config_key(key: &str) -> bool {
+    key == AUTH_PROFILES_CONFIG_KEY
+        || key == crate::site_auth::SITE_AUTH_CONFIG_KEY
+        || is_profile_config_key(key)
+}
+
 /// 返回当前 Unix 秒。
 pub fn now_unix() -> i64 {
     chrono::Utc::now().timestamp()
@@ -295,7 +318,25 @@ mod tests {
     fn default_ref_uses_normalized_site() {
         assert_eq!(
             default_auth_ref("bilibili@example", "https://Example.COM:443/video"),
-            Some("bilibili@example::example.com".to_string())
+            Some("bilibili@example::https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn site_key_includes_scheme_and_rejects_cross_scheme_match() {
+        assert_eq!(
+            site_key("https://example.com/a"),
+            Some("https://example.com".to_string())
+        );
+        assert_eq!(
+            site_key("http://example.com/a"),
+            Some("http://example.com".to_string())
+        );
+        // 同 host 不同 scheme 是两个不同站点键——https 登录态不会隐式命中
+        // http 请求（H-3）。
+        assert_ne!(
+            site_key("https://example.com/a"),
+            site_key("http://example.com/a")
         );
     }
 
@@ -332,14 +373,18 @@ mod tests {
     }
 
     #[test]
-    fn normalize_site_accepts_url_or_host() {
+    fn normalize_site_accepts_url_or_host_and_defaults_bare_host_to_https() {
         assert_eq!(
             normalize_site("https://Example.COM/path"),
-            Some("example.com".to_string())
+            Some("https://example.com".to_string())
         );
         assert_eq!(
             normalize_site("example.com:8443"),
-            Some("example.com:8443".to_string())
+            Some("https://example.com:8443".to_string())
+        );
+        assert_eq!(
+            normalize_site("http://example.com"),
+            Some("http://example.com".to_string())
         );
     }
 
@@ -351,5 +396,81 @@ mod tests {
         };
         assert!(profile.is_valid_at(99));
         assert!(!profile.is_valid_at(100));
+    }
+
+    #[test]
+    fn is_sensitive_config_key_covers_profiles_and_site_auth() {
+        assert!(is_sensitive_config_key(AUTH_PROFILES_CONFIG_KEY));
+        assert!(is_sensitive_config_key("site_auth_credentials"));
+        assert!(is_sensitive_config_key("plugin.a@b.auth.https://x.com"));
+        assert!(!is_sensitive_config_key("plugin.a@b.enabled"));
+        assert!(!is_sensitive_config_key("plugin.dev.a@b"));
+    }
+
+    async fn open_test_db() -> (Db, std::path::PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("fluxdown_auth_test_{}_{nanos}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let db = Db::open(&dir).await.expect("open test db");
+        (db, dir)
+    }
+
+    #[tokio::test]
+    async fn corrupted_legacy_table_is_discarded_instead_of_blocking_save() {
+        let (db, dir) = open_test_db().await;
+        db.set_config(AUTH_PROFILES_CONFIG_KEY, "not json")
+            .await
+            .expect("seed corrupted legacy table");
+        let profile = AuthProfile {
+            plugin_id: "a@b".to_string(),
+            site: "https://example.com".to_string(),
+            cookies: "sid=1".to_string(),
+            ..Default::default()
+        };
+        save(&db, &profile)
+            .await
+            .expect("save must not fail-closed on corrupted legacy table");
+        assert!(
+            db.get_config(AUTH_PROFILES_CONFIG_KEY)
+                .await
+                .expect("read back")
+                .is_none(),
+            "corrupted legacy key must be dropped, not left dangling"
+        );
+        let loaded = load(&db, "a@b::https://example.com")
+            .await
+            .expect("load")
+            .expect("profile persisted under new per-key format");
+        assert_eq!(loaded.cookies, "sid=1");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn legacy_table_site_keys_are_migrated_with_https_scheme() {
+        let (db, dir) = open_test_db().await;
+        let legacy = serde_json::json!({
+            "a@b::example.com": {
+                "authRef": "a@b::example.com",
+                "pluginId": "a@b",
+                "site": "example.com",
+                "cookies": "sid=1",
+            }
+        });
+        db.set_config(AUTH_PROFILES_CONFIG_KEY, &legacy.to_string())
+            .await
+            .expect("seed legacy table");
+        migrate_legacy(&db).await.expect("migrate");
+        let migrated = load(&db, "a@b::https://example.com")
+            .await
+            .expect("load")
+            .expect("legacy entry migrated under https-qualified key");
+        assert_eq!(migrated.site, "https://example.com");
+        assert_eq!(migrated.auth_ref, "a@b::https://example.com");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

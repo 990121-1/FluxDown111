@@ -35,8 +35,12 @@ pub const HARD_TIMEOUT_CEILING: Duration = Duration::from_secs(30);
 /// 硬顶（**墙钟**预算）：单次调用的总墙钟时长上限（外层 `tokio::time::timeout`）。
 /// 覆盖长时 `await`（ffmpeg 转码可达分钟级），远大于中断顶。
 pub const HARD_WALL_CEILING: Duration = Duration::from_secs(1830);
-/// resolve 信号量 acquire 超时（超时 → `Overloaded`，fail-closed）。
+/// resolve/auth 信号量 acquire 超时（超时 → `Overloaded`，fail-closed）。
 const RESOLVE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
+/// auth 平面并发上限（M-2）：独立于 resolve 信号量，容量刻意开小——登录/二维码
+/// 轮询是低频交互式调用，不该也不需要和 resolve 抢同一组 permit（否则高频轮询
+/// 会把正常下载任务的 resolve 挤到 `Overloaded`）。
+const AUTH_CONCURRENCY: usize = 2;
 /// resolve 返回 null/undefined 的哨兵。
 const NULL_SENTINEL: &str = "__FLUX_NULL__";
 /// storage.get 无值的哨兵。
@@ -56,10 +60,13 @@ pub struct QuickJsScriptRuntime {
     runtime: Option<tokio::runtime::Runtime>,
     /// runtime 的 handle（cheap clone，供 `spawn_handle` 恒可用，与 runtime 生命周期同步）。
     handle: tokio::runtime::Handle,
-    /// resolve 平面信号量：固定容量 `max(启动时 max_concurrent, workers)`。
+    /// resolve/subscription 共用信号量：固定容量 `max(启动时 max_concurrent, workers)`。
     resolve_sema: Arc<Semaphore>,
     /// hook 平面信号量：容量 = workers；`try_acquire` 失败即丢。
     hook_sema: Arc<Semaphore>,
+    /// auth 平面独立信号量（M-2）：与 resolve/subscription 物理隔离，登录轮询
+    /// 不会挤占正常下载任务的 resolve permit，反之亦然。
+    auth_sema: Arc<Semaphore>,
 }
 
 impl Drop for QuickJsScriptRuntime {
@@ -91,6 +98,7 @@ impl QuickJsScriptRuntime {
             handle,
             resolve_sema: Arc::new(Semaphore::new(resolve_cap)),
             hook_sema: Arc::new(Semaphore::new(workers.max(1))),
+            auth_sema: Arc::new(Semaphore::new(AUTH_CONCURRENCY)),
         })
     }
 
@@ -309,9 +317,11 @@ impl ScriptRuntime for QuickJsScriptRuntime {
         budget: ExecutionBudget,
         host: HostContext,
     ) -> Result<AuthResult, PluginError> {
+        // auth 平面独立信号量（M-2）：不与 resolve/subscription 共用容量，登录
+        // 轮询挤不掉正常下载任务的 resolve permit。
         let permit = tokio::time::timeout(
             RESOLVE_ACQUIRE_TIMEOUT,
-            self.resolve_sema.clone().acquire_owned(),
+            self.auth_sema.clone().acquire_owned(),
         )
         .await
         .map_err(|_| PluginError::Overloaded)?
