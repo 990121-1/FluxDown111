@@ -2161,7 +2161,8 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          ref: ${{ needs.changes.outputs.tag }}
+          # 不检出 tag：本地 composite action（release-notes）从 workspace 加载，
+          # 检出 tag 会跑成旧版本 action。历史与 tag 已由 fetch-depth:0 + fetch-tags 提供。
 
       - name: Get version from tag
         id: version
