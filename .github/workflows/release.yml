@@ -2175,6 +2175,7 @@ jobs:
           component: Android 移动端
           fallback-title: Mobile Release v${{ steps.version.outputs.VERSION }}
           paths: native/engine/** android/** lib/src/mobile/**
+          tag: ${{ needs.changes.outputs.tag }}
           claude-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
       - name: Download Android APK artifacts
