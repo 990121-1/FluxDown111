@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use fluxdown_engine::download_manager::{CreateGroupSpec, GroupItemSpec};
+use fluxdown_engine::log_info;
 use fluxdown_protocol::method;
 use fluxdown_protocol::{
     ApplicationErrorCode, CdnConfigApplyParams, CdnReportAckParams, CreateGroupRequest,
@@ -1190,13 +1191,13 @@ impl DaemonService {
             .map_err(|error| internal_error(format!("{error:#}")))?;
         match component {
             fluxdown_protocol::ComponentKind::Ffmpeg => {
-                fluxdown_engine::components::list_versions(&client)
+                fluxdown_engine::components::list_versions(&self.db, &client)
                     .await
                     .map(fluxdown_engine_protocol::ffmpeg_versions_to_dto)
                     .map_err(|error| internal_error(error.to_string()))
             }
             fluxdown_protocol::ComponentKind::Ytdlp => {
-                fluxdown_engine::components::list_ytdlp_versions(&client)
+                fluxdown_engine::components::list_ytdlp_versions(&self.db, &client)
                     .await
                     .map(fluxdown_engine_protocol::ytdlp_versions_to_dto)
                     .map_err(|error| internal_error(error.to_string()))

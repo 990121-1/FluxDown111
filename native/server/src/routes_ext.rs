@@ -15,7 +15,8 @@
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Body;
@@ -74,6 +75,9 @@ pub struct ServerState {
     pub ffmpeg_installing: Arc<AtomicBool>,
     /// yt-dlp 托管安装互斥标志：安装/更新期间为 `true`，防止并发重复安装。
     pub ytdlp_installing: Arc<AtomicBool>,
+    /// 磁盘剩余空间缓存：(采样时刻, 字节数)。任务活跃时每次实测；完全
+    /// 空闲时 60s TTL 内复用，避免 `/stats` 高频轮询频繁唤醒 NAS/网络盘。
+    pub disk_space_cache: Arc<Mutex<Option<(Instant, u64)>>>,
 }
 
 impl ServerState {
@@ -1135,7 +1139,35 @@ async fn setup_complete(
 )]
 async fn stats(State(state): State<ServerState>) -> Result<Response, ApiError> {
     let save_dir = state.current_save_dir().await;
-    let disk_free_bytes = fs2::available_space(FsPath::new(&save_dir)).ok();
+    /// 空闲期磁盘空间缓存的有效期：足够摊薄高频轮询，又不会让用户在设置页
+    /// 看到明显过期的剩余空间数字。
+    const DISK_SPACE_CACHE_TTL: Duration = Duration::from_secs(60);
+    let has_active_download = state.db.count_tasks_by_status(1).await.unwrap_or(0) > 0;
+    let disk_free_bytes = if has_active_download {
+        // 任务正在下载，磁盘占用实时变化，每次都实测。
+        fs2::available_space(FsPath::new(&save_dir)).ok()
+    } else {
+        let cached = state
+            .disk_space_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .filter(|(sampled_at, _)| sampled_at.elapsed() < DISK_SPACE_CACHE_TTL)
+            .map(|(_, bytes)| bytes);
+        match cached {
+            Some(bytes) => Some(bytes),
+            None => {
+                let fresh = fs2::available_space(FsPath::new(&save_dir)).ok();
+                if let Some(bytes) = fresh {
+                    *state
+                        .disk_space_cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((Instant::now(), bytes));
+                }
+                fresh
+            }
+        }
+    };
     Ok(axum::Json(StatsResponse {
         disk_free_bytes,
         save_dir,
@@ -1169,12 +1201,10 @@ async fn component_ffmpeg_status(State(state): State<ServerState>) -> Result<Res
     ),
     security(("bearer_token" = []), ("api_key" = []))
 )]
-async fn component_ffmpeg_versions(
-    State(_state): State<ServerState>,
-) -> Result<Response, ApiError> {
+async fn component_ffmpeg_versions(State(state): State<ServerState>) -> Result<Response, ApiError> {
     let client =
         build_client(&ProxyConfig::default(), "").map_err(|e| ApiError::Internal(e.to_string()))?;
-    let versions = list_versions(&client)
+    let versions = list_versions(&state.db, &client)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(axum::Json(fluxdown_engine_protocol::ffmpeg_versions_to_dto(versions)).into_response())
@@ -1281,10 +1311,10 @@ async fn component_ytdlp_status(State(state): State<ServerState>) -> Result<Resp
     ),
     security(("bearer_token" = []), ("api_key" = []))
 )]
-async fn component_ytdlp_versions(State(_state): State<ServerState>) -> Result<Response, ApiError> {
+async fn component_ytdlp_versions(State(state): State<ServerState>) -> Result<Response, ApiError> {
     let client =
         build_client(&ProxyConfig::default(), "").map_err(|e| ApiError::Internal(e.to_string()))?;
-    let versions = list_ytdlp_versions(&client)
+    let versions = list_ytdlp_versions(&state.db, &client)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(axum::Json(fluxdown_engine_protocol::ytdlp_versions_to_dto(versions)).into_response())
