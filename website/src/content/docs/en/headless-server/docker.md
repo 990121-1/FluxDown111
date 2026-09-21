@@ -28,7 +28,7 @@ docker run -d \
 
 On first visit to `http://<host>:17800/`, the Web UI opens an initialization wizard where you set the access key yourself (at least 8 characters, must include both letters and digits). Use that key to sign in to the Web UI and to authenticate the management API and MCP endpoint (`Authorization: Bearer <token>`).
 
-For docker-compose or other orchestration, you can pre-set the key with `FLUXDOWN_TOKEN` and skip the wizard. It only takes effect when the instance has not set a key yet:
+For docker-compose or other orchestration, you can pre-set the key with `FLUXDOWN_TOKEN` and skip the wizard. It only takes effect when the instance has not set a key yet, unless you also set `FLUXDOWN_TOKEN_FORCE=1`, which makes it override the stored key on every restart (see [Environment variables](/docs/en/headless-server/setup/#environment-variables)):
 
 ```bash
 docker run -d \
