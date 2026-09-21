@@ -7,7 +7,7 @@
  *
  * 路由策略（302 重定向，本服务不中转下载流量）：
  * - 优先阿里云 OSS：发布流水线把每个组件 release 的资产同步到
- *   `oss://<bucket>/<prefix>/<tag>/<file>`（.github/actions/oss-upload）；bucket
+ *   `oss://<bucket>/<prefix>/<版本>/<组件>/<file>`（.github/actions/oss-upload）；bucket
  *   私有，本路由用预签名 HEAD 探测（60s 内存缓存 + 2.5s 超时）确认对象存在后，
  *   302 到 1 小时有效的预签名 GET URL。
  * - OSS 未配置 / 不可达 / 未持有该资产：302 到 GitHub 官方 CDN 直连。

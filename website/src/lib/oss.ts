@@ -18,9 +18,17 @@ import {
 /** 未配置 AK/SK 时整条 OSS 路径关闭（下载路由回退 GitHub）。 */
 export const ossConfigured = !!(OSS_ACCESS_KEY_ID && OSS_ACCESS_KEY_SECRET);
 
-/** 发布资产的对象键（无前导斜杠）：`<prefix>/<tag>/<file>`。 */
+/**
+ * 发布资产的对象键（无前导斜杠）：`<prefix>/<版本>/<组件>/<file>`。
+ * 组件 tag 规则与 release.yml 一致：`v0.4.8` → app，`extension-v0.4.8` /
+ * `server-v…` / `cli-v…` / `mobile-v…` → 同名组件；版本目录保留 `v` 前缀。
+ * 同一套规则在 .github/actions/oss-upload/action.yml 的 bash 里复刻，改一处须同步另一处。
+ */
 export function releaseObjectKey(tag: string, filename: string): string {
-  return `${OSS_RELEASE_PREFIX}/${tag}/${filename}`;
+  const m = /^(?:([a-z]+)-)?(v.+)$/.exec(tag);
+  const component = m?.[1] ?? "app";
+  const version = m?.[2] ?? tag;
+  return `${OSS_RELEASE_PREFIX}/${version}/${component}/${filename}`;
 }
 
 /**
