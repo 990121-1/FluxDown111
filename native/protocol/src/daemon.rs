@@ -670,6 +670,15 @@ pub struct RenameTaskRequest {
     pub file_name: String,
 }
 
+/// 更换任务下载源地址请求体。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeTaskUrlRequest {
+    /// 新下载地址（http(s)/ftp，或待解封装的 `thunder://` 链接）。
+    pub url: String,
+}
+
 /// 设置插件启用状态请求体。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
