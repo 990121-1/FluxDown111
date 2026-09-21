@@ -23,6 +23,8 @@ Dart 与 Rust 两端写**同一目录同一文件**，统一格式 `HH:MM:SS.mmm
 
 构建矩阵：Windows（x64+arm64，Inno 安装器+便携 zip）、扩展（Chrome+Firefox，预发布 tag 不打包扩展）、Linux（AppImage/deb/arch/tar.gz）、macOS（x64+arm64，DMG+便携）、Android（split-per-abi + universal APK，cargokit 编各 ABI cdylib）、Web SPA（一次复用）、server 多平台二进制（musl 静态）、server NAS 包（OpenWrt/QNAP/群晖）、CLI 六平台、server Docker（ghcr.io，QEMU arm64）。每个 release job 各用自己的组件 tag，跑 git-cliff（`--include-path <组件目录>`）后经 Claude Code CLI 翻译为中英双语（`<!-- fluxdown:lang:zh/en -->` 标记，失败回退原始 cliff）。
 
+**下载分发**：每个 release job 在 GitHub Release 创建后经 `.github/actions/oss-upload`（固定版 ossutil 2.x）把 `release-assets/*` 同步到阿里云 OSS `oss://zerx-lab/FluxDownRelease/<组件 tag>/<文件>`（bucket 私有；secrets `OSS_ACCESS_KEY_ID`/`OSS_ACCESS_KEY_SECRET`，未配则跳过，`continue-on-error` 不阻断发布）。官网 `website/src/pages/api/download/[filename].ts` 优先做预签名 HEAD 探测后 302 到 1h 预签名 GET（`website/src/lib/oss.ts`，V1 签名），OSS 缺失/不可达回退 GitHub CDN；`?source=github` 强制直连。不再有 CN 地域分流与 githubProxy 镜像。
+
 构建期 dart-define：`APP_VERSION`、`ANALYTICS_APP_KEY`、`FLUXCLOUD_BASE_URL`、`STATS_*`。
 
 ---
