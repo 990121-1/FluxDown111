@@ -5,6 +5,7 @@
 //! | `FLUXDOWN_DATA_DIR` | 数据目录（DB/日志） | 平台自动探测 |
 //! | `FLUXDOWN_DATABASE_URL` | 数据库连接 URL（`sqlite:`/`postgres:`） | 数据目录下 SQLite |
 //! | `FLUXDOWN_BIND` | HTTP 监听地址 | `0.0.0.0:17800` |
+//! | `FLUXDOWN_SAVE_DIR` | 首次启动时播种的默认保存目录（库中已有 `default_save_dir` 后不再覆盖，Web 设置页改过的值优先） | 平台「下载」目录 |
 //! | `FLUXDOWN_WEBROOT` | 覆盖内嵌 Web UI，改从该磁盘目录托管 SPA | 未设置（用二进制内嵌的前端） |
 //! | `FLUXDOWN_TOKEN` | 预置管理访问密钥（默认仅在库中尚未设置时采纳；见 `FLUXDOWN_TOKEN_FORCE`） | 未设置（走 Web 向导） |
 //! | `FLUXDOWN_TOKEN_FORCE` | 真值（`1`/`true`）时 `FLUXDOWN_TOKEN` 每次启动都覆盖库中已存的访问密钥（#535） | 未设置（`FLUXDOWN_TOKEN` 仅首次生效） |
@@ -145,9 +146,20 @@ fn builtin_demo_url(bind: &str) -> String {
     format!("http://127.0.0.1:{port}{}", crate::demo::DEMO_FILE_PATH)
 }
 
-/// 平台默认下载目录（与 App 侧 `download_actor::default_save_dir` 同源：
-/// 走系统 API 解析，不做 `$HOME/Downloads` 拼接）。
+/// 默认下载目录：`FLUXDOWN_SAVE_DIR`（NAS 套件把授权的共享文件夹传进来）优先，
+/// 否则走平台「下载」目录（与 App 侧 `download_actor::default_save_dir` 同源：
+/// 系统 API 解析，不做 `$HOME/Downloads` 拼接）。
+///
+/// 只用于 `init_default_config` 的首次播种；库里一旦有 `default_save_dir`
+/// 就以库为准，环境变量不会覆盖用户在设置页改过的值。
 pub fn default_save_dir() -> String {
+    if let Some(dir) = std::env::var("FLUXDOWN_SAVE_DIR")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        return dir;
+    }
     fluxdown_engine::user_dirs::download_dir_or_cwd()
 }
 

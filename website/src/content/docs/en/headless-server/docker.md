@@ -101,7 +101,7 @@ Not sure which CPU family your model uses? Check the "Package Arch" column for y
 ### Install
 
 1. Open **Package Center → Settings → General** and set **Trust Level** to **Any publisher**. This is required because the packages are unsigned: DSM 7 removed third-party package signing entirely — the only "verified" packages are those distributed through Synology's official Package Center program.
-2. **Package Center → Manual Install**, select the `.spk`, and follow the wizard.
+2. **Package Center → Manual Install**, select the `.spk`, and follow the wizard. On DSM 7 the wizard asks for a **shared folder for downloads** (default `FluxDown`): it is created if missing and the package user is granted read/write on every start, so it is ready to use as the save directory right away.
 3. Start the package, then click **Open** in Package Center — it links straight to the Web UI on port `17800` (`http://<NAS-IP>:17800`).
 
 ### First-run access key
@@ -110,9 +110,9 @@ On first open of the Web UI (`http://<NAS-IP>:17800`), the initialization wizard
 
 ### Permissions and data locations
 
-- On **DSM 7** the service runs as a dedicated low-privilege package user (a DSM 7 platform requirement — packages may no longer run as root). On **DSM 6** it runs as root.
-- Database, logs, and the access key live in `/var/packages/FluxDown/var`; downloads default to the same directory.
-- To download into a shared folder on DSM 7, grant the package user write access first: **Control Panel → Shared Folder → Edit → Permissions**, switch the user dropdown to **System internal user**, and give **FluxDown** Read/Write. DSM 6 needs no grant (root).
+- On **DSM 7** the service runs as the dedicated low-privilege package user `sc-fluxdown` (a DSM 7 platform requirement — packages may no longer run as root). On **DSM 6** it runs as root.
+- Database, logs, and the access key live in `/var/packages/FluxDown/var`. On DSM 7 downloads default to the shared folder chosen in the install wizard; on DSM 6 they default to the platform download directory.
+- A package user has **no access to any other shared folder** by default. If the save-directory picker shows *"The server has no permission to read this directory"* for `/volume1/<share>` (or the folder looks empty), grant it first: **Control Panel → Shared Folder → Edit → Permissions**, switch the user dropdown to **System internal user**, and give **sc-fluxdown** Read/Write. DSM 6 needs no grant (root).
 
 ### Upgrade and uninstall
 

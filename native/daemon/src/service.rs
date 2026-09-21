@@ -1409,22 +1409,27 @@ impl DaemonService {
             .filter(|path| !path.as_os_str().is_empty())
             .map(|path| path.to_string_lossy().into_owned());
         let mut dirs = Vec::new();
-        if let Ok(mut entries) = tokio::fs::read_dir(base_path).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let Ok(file_type) = entry.file_type().await else {
-                    continue;
-                };
-                if !file_type.is_dir() {
-                    continue;
+        // 受限用户（NAS 套件）浏览到未授权目录时 EACCES：不整体失败，返回
+        // `denied=true` 让 UI 提示授权，parent 仍可用以继续导航。
+        let mut denied = false;
+        match tokio::fs::read_dir(base_path).await {
+            Ok(mut entries) => {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let Ok(file_type) = entry.file_type().await else {
+                        continue;
+                    };
+                    if !file_type.is_dir() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    dirs.push(fluxdown_protocol::FsEntry {
+                        name,
+                        path: entry.path().to_string_lossy().into_owned(),
+                    });
                 }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with('.') {
-                    continue;
-                }
-                dirs.push(fluxdown_protocol::FsEntry {
-                    name,
-                    path: entry.path().to_string_lossy().into_owned(),
-                });
             }
         }
         dirs.sort_by_key(|entry| entry.name.to_lowercase());
@@ -1446,12 +1451,14 @@ fn manifest_item_to_preview_dto(
         path: item.path,
         size: item.size,
         variants: item
+            Err(e) => denied = e.kind() == std::io::ErrorKind::PermissionDenied,
             .variants
             .into_iter()
             .map(|variant| fluxdown_protocol::PreviewVariantDto {
                 id: variant.id,
                 label: variant.label,
                 size: variant.size,
+            denied,
             })
             .collect(),
     }

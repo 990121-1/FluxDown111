@@ -919,31 +919,37 @@ async fn fs_list(
     let mut dirs = Vec::new();
     // 群晖/QNAP 等套件以受限用户运行，浏览到授权目录之外会 EACCES。
     // 此时不整体失败（否则选择器卡死显示「目录读取失败」，无法后退换路径），
-    // 而是返回空子目录列表 + 可用的 parent，让用户仍能沿面包屑/上级继续导航。
-    if let Ok(mut rd) = tokio::fs::read_dir(base_path).await {
-        while let Ok(Some(entry)) = rd.next_entry().await {
-            let Ok(ft) = entry.file_type().await else {
-                continue;
-            };
-            if !ft.is_dir() {
-                continue;
+    // 而是返回空子目录列表 + `denied=true` + 可用的 parent：前端据此提示
+    // 「需在 NAS 上给套件用户授权」，用户仍能沿面包屑/上级继续导航。
+    let mut denied = false;
+    match tokio::fs::read_dir(base_path).await {
+        Ok(mut rd) => {
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let Ok(ft) = entry.file_type().await else {
+                    continue;
+                };
+                if !ft.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                // 隐藏目录（.git 等）不进选择器。
+                if name.starts_with('.') {
+                    continue;
+                }
+                dirs.push(FsEntry {
+                    path: entry.path().to_string_lossy().into_owned(),
+                    name,
+                });
             }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // 隐藏目录（.git 等）不进选择器。
-            if name.starts_with('.') {
-                continue;
-            }
-            dirs.push(FsEntry {
-                path: entry.path().to_string_lossy().into_owned(),
-                name,
-            });
         }
+        Err(e) => denied = e.kind() == std::io::ErrorKind::PermissionDenied,
     }
     dirs.sort_by_key(|a| a.name.to_lowercase());
     Ok(axum::Json(FsListResponse {
         path: base,
         parent,
         dirs,
+        denied,
     })
     .into_response())
 }

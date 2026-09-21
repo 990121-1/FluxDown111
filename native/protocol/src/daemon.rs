@@ -1889,6 +1889,11 @@ pub struct StatsResponse {
     pub ws_clients: usize,
     /// 演示模式开关（服务器以 `FLUXDOWN_DEMO_URL` 启动时为 true）。
     pub demo_mode: bool,
+    /// 服务进程对该目录无读取权限（EACCES）。此时 `dirs` 必为空，但语义是
+    /// 「看不到」而非「没有」——NAS 套件以受限用户运行、未给共享文件夹授权时
+    /// 就是这种情况，前端据此提示授权而不是显示「空目录」。
+    #[serde(default)]
+    pub denied: bool,
     /// 演示模式下唯一允许下载的 URL；非演示模式为空串。
     pub demo_url: String,
 }

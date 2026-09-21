@@ -474,6 +474,7 @@
   "fs.up": "上级目录",
   "fs.loadFailed": "目录读取失败",
   "fs.emptyDir": "此目录下没有子目录",
+  "fs.denied": "服务进程无权读取此目录。NAS 上请先在共享文件夹权限里授权套件用户（群晖 DSM 7 为 sc-fluxdown）。",
   "fs.choose": "选择此目录",
   "hls.title": "选择画质",
   "hls.desc": "检测到 {n} 个码率 · 60 秒内未选择将自动使用最高带宽",

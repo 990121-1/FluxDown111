@@ -54,6 +54,7 @@ All configuration is read once at startup from environment variables. There is n
 |---|---|---|
 | `FLUXDOWN_BIND` | `0.0.0.0:17800` | TCP address the HTTP/WebSocket server listens on. |
 | `FLUXDOWN_DATA_DIR` | Platform auto-detected (see below) | Directory holding the database file and logs. |
+| `FLUXDOWN_SAVE_DIR` | unset — platform download directory | Initial default save directory, applied only on first start (seeded into the database when no `default_save_dir` is stored yet). A directory later chosen in Settings always wins. The Synology package uses it to point at the shared folder picked in the install wizard. |
 | `FLUXDOWN_DATABASE_URL` | unset — uses a SQLite file inside the data dir | Explicit connection string: `sqlite:/path/to/file.db` or `postgres://user:pass@host/db`. |
 | `FLUXDOWN_WEBROOT` | unset — serves the embedded Web UI | Optional override: serve the SPA from this directory instead of the embedded copy (custom front end, or a hot-swapped `bun run build` output). There is **no** implicit `./web` lookup next to the executable. |
 | `FLUXDOWN_TOKEN` | unset — first-run Web setup wizard | Optional pre-set management access key. Applied only when the database has no key yet (value is trimmed; must satisfy the key rules below, otherwise ignored with a warning). Use for unattended docker-compose / k8s / CI deploys that skip the wizard. See `FLUXDOWN_TOKEN_FORCE` below to override an existing key instead. |
