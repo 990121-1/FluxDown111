@@ -27,6 +27,8 @@ Dart 与 Rust 两端写**同一目录同一文件**，统一格式 `HH:MM:SS.mmm
 
 构建期 dart-define：`APP_VERSION`、`ANALYTICS_APP_KEY`、`FLUXCLOUD_BASE_URL`、`STATS_*`。
 
+`fluxdown-agent` 的 FluxCloud 地址解析（`native/agent/src/runtime.rs`）：运行期 env `FLUXCLOUD_BASE_URL` > 编译期同名 env（`option_env!`，正式包应在 `cargo build` 时注入，与 dart-define 同源）> `http://127.0.0.1:8720`。**仅调试构建**再叠加 agent 私有状态里的用户覆盖（`agent.cloud.endpointGet/Set`，GPUI 账户页「服务器地址」卡片；对齐 Flutter `CloudApiConfig` 的 `kDebugMode` 门控），正式构建忽略残留覆盖并拒绝 `endpointSet`。
+
 ---
 
 ## 设计文档实现状态（`docs/`）

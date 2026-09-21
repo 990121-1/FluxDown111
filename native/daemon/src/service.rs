@@ -387,6 +387,26 @@ impl DaemonService {
                     domain_count: u64::try_from(count).unwrap_or(u64::MAX),
                 })
             }
+            method::DAEMON_CONFIG_SYSTEM_PROXY => {
+                let detected =
+                    tokio::task::spawn_blocking(fluxdown_engine::proxy_config::detect_system_proxy)
+                        .await
+                        .map_err(|error| internal_error(format!("{error:#}")))?;
+                to_value(match detected {
+                    Ok(Some(cfg)) => fluxdown_protocol::SystemProxyDto {
+                        detected: true,
+                        proxy_type: cfg.proxy_type.as_str().to_owned(),
+                        host: cfg.host,
+                        port: cfg.port,
+                        no_list: cfg.no_proxy_list,
+                    },
+                    Ok(None) => fluxdown_protocol::SystemProxyDto::default(),
+                    Err(error) => {
+                        log_info!("[daemon] system proxy detection error: {error:#}");
+                        fluxdown_protocol::SystemProxyDto::default()
+                    }
+                })
+            }
             method::DAEMON_CONFIG_CLEAR_CONN_POLICY => {
                 match self.actor.execute(ActorOperation::ClearConnPolicy).await {
                     Ok(ActorResult::ConnPolicy(summary)) => to_value(summary),
@@ -1431,12 +1451,14 @@ impl DaemonService {
                     });
                 }
             }
+            Err(e) => denied = e.kind() == std::io::ErrorKind::PermissionDenied,
         }
         dirs.sort_by_key(|entry| entry.name.to_lowercase());
         Ok(fluxdown_protocol::FsListResponse {
             path: base,
             parent,
             dirs,
+            denied,
         })
     }
 }
@@ -1451,14 +1473,12 @@ fn manifest_item_to_preview_dto(
         path: item.path,
         size: item.size,
         variants: item
-            Err(e) => denied = e.kind() == std::io::ErrorKind::PermissionDenied,
             .variants
             .into_iter()
             .map(|variant| fluxdown_protocol::PreviewVariantDto {
                 id: variant.id,
                 label: variant.label,
                 size: variant.size,
-            denied,
             })
             .collect(),
     }

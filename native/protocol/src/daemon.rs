@@ -1756,6 +1756,21 @@ pub struct ConnPolicySummaryDto {
     pub domain_count: u64,
 }
 
+/// 系统代理检测结果（`daemon.config.systemProxy`）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SystemProxyDto {
+    /// 是否检测到系统代理。
+    pub detected: bool,
+    /// `http` / `https` / `socks4` / `socks5`；未检测到时为空串。
+    pub proxy_type: String,
+    pub host: String,
+    pub port: u16,
+    /// 逗号分隔的排除列表；未检测到时为空串。
+    pub no_list: String,
+}
+
 /// Tracker 订阅刷新结果（`POST /api/v1/bt/tracker-sub/refresh`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -1874,6 +1889,11 @@ pub struct FsListResponse {
     pub parent: Option<String>,
     /// 子目录列表（不含文件）。
     pub dirs: Vec<FsEntry>,
+    /// 服务进程对该目录无读取权限（EACCES）。此时 `dirs` 必为空，但语义是
+    /// 「看不到」而非「没有」——NAS 套件以受限用户运行、未给共享文件夹授权时
+    /// 就是这种情况，前端据此提示授权而不是显示「空目录」。
+    #[serde(default)]
+    pub denied: bool,
 }
 
 /// 服务器运行状态（`GET /api/v1/stats`，前端状态栏用）。
@@ -1889,11 +1909,6 @@ pub struct StatsResponse {
     pub ws_clients: usize,
     /// 演示模式开关（服务器以 `FLUXDOWN_DEMO_URL` 启动时为 true）。
     pub demo_mode: bool,
-    /// 服务进程对该目录无读取权限（EACCES）。此时 `dirs` 必为空，但语义是
-    /// 「看不到」而非「没有」——NAS 套件以受限用户运行、未给共享文件夹授权时
-    /// 就是这种情况，前端据此提示授权而不是显示「空目录」。
-    #[serde(default)]
-    pub denied: bool,
     /// 演示模式下唯一允许下载的 URL；非演示模式为空串。
     pub demo_url: String,
 }
