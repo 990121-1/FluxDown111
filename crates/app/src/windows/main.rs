@@ -20,6 +20,12 @@ use crate::{
 
 const MAIN_WINDOW_SIZE: gpui::Size<gpui::Pixels> = size(px(1120.), px(760.));
 
+/// 显示 / 恢复 / 聚焦主窗口；窗口已关闭时重建。
+pub fn reveal(cx: &mut App) {
+    open(cx);
+    cx.activate(true);
+}
+
 /// 打开或聚焦主窗口。返回新建窗口句柄（已开时 `None`）。
 pub fn open(cx: &mut App) -> Option<WindowHandle<Root>> {
     let desktop = Desktop::global(cx);

@@ -12,7 +12,7 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, App, Bounds, Context, Entity, Global, Pixels, Point, Render, Size,
+    AnyWindowHandle, App, Bounds, Context, DisplayId, Entity, Global, Pixels, Render, Size,
     Subscription, Window, WindowBounds, WindowHandle, WindowId, WindowOptions, point, px, size,
 };
 use gpui_component::WindowExt as _;
@@ -142,29 +142,6 @@ impl WindowRegistry {
         }
     }
 
-    /// 用新窗口替换同 key 的旧窗口：先注册新窗口再关旧窗口，中间不会出现「无窗口」瞬间
-    /// （否则非 Resident 进程会被退出判定误杀）。
-    pub fn reopen<V: Render>(
-        cx: &mut App,
-        key: WindowKey,
-        options: WindowOptions,
-        build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
-    ) -> Option<WindowHandle<V>> {
-        let old = {
-            let registry = cx.global_mut::<Self>();
-            let old = registry.open.remove(&key);
-            if let Some(old) = old {
-                registry.ids.remove(&old.window_id());
-            }
-            old
-        };
-        let handle = Self::open_or_focus(cx, key, options, build);
-        if let Some(old) = old {
-            let _ = old.update(cx, |_, window, _| window.remove_window());
-        }
-        handle
-    }
-
     pub fn close(cx: &mut App, key: &WindowKey) {
         if let Some(handle) = cx.global::<Self>().open.get(key).copied() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -179,6 +156,19 @@ impl WindowRegistry {
     #[must_use]
     pub fn handle(cx: &App, key: &WindowKey) -> Option<AnyWindowHandle> {
         cx.global::<Self>().open.get(key).copied()
+    }
+
+    /// 主窗口所在的显示器；无主窗口时调用方应让 GPUI 回退到主显示器。
+    #[must_use]
+    pub fn main_display_id(cx: &mut App) -> Option<DisplayId> {
+        Self::handle(cx, &WindowKey::Main)
+            .and_then(|handle| {
+                handle
+                    .update(cx, |_, window, cx| window.display(cx))
+                    .ok()
+                    .flatten()
+            })
+            .map(|display| display.id())
     }
 
     /// 窗口 id → 注册 key（未注册的窗口返回 `None`）。
@@ -408,26 +398,6 @@ fn bounds_visible(bounds: &Bounds<Pixels>, displays: &[Bounds<Pixels>]) -> bool 
         let visible = display.intersect(bounds);
         f32::from(visible.size.width) >= 100.0 && f32::from(visible.size.height) >= 100.0
     })
-}
-
-/// 屏幕右下角贴边定位（快速捕获窗口）。
-#[must_use]
-pub fn bottom_right_bounds(size: Size<Pixels>, margin: Point<Pixels>, cx: &App) -> Bounds<Pixels> {
-    let display = cx
-        .primary_display()
-        .map(|display| display.bounds())
-        .unwrap_or_else(|| Bounds {
-            origin: point(px(0.), px(0.)),
-            size,
-        });
-    let corner = display.bottom_right();
-    Bounds {
-        origin: point(
-            corner.x - size.width - margin.x,
-            corner.y - size.height - margin.y,
-        ),
-        size,
-    }
 }
 
 #[cfg(test)]
