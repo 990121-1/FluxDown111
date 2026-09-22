@@ -28,6 +28,8 @@ pub fn reveal(cx: &mut App) {
 
 /// 打开或聚焦主窗口。返回新建窗口句柄（已开时 `None`）。
 pub fn open(cx: &mut App) -> Option<WindowHandle<Root>> {
+    // 关窗驻留托盘时 Dock 图标已隐藏；主窗口出现前恢复，保证激活后菜单栏与 Dock 就位。
+    crate::app_icon::set_dock_visible(true);
     let desktop = Desktop::global(cx);
     let translator = desktop.translator.clone();
     let session = desktop.session.clone();

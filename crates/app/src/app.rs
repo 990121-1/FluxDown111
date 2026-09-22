@@ -386,6 +386,7 @@ fn open_main_minimized(cx: &mut App) {
     let to_tray =
         WindowRegistry::is_resident(cx) && Desktop::pref_bool(cx, "start_minimized_to_tray", false);
     if to_tray {
+        crate::app_icon::set_dock_visible(false);
         return;
     }
     if let Some(handle) = crate::windows::main::open(cx) {

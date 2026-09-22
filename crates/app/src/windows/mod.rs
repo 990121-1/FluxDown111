@@ -71,16 +71,23 @@ impl WindowRegistry {
     /// 安装全局注册表：窗口关闭清理 + 退出判定 + 退出时落盘边界。
     pub fn init(cx: &mut App, client: Arc<AgentClient>) {
         let closed_sub = cx.on_window_closed(|cx, window_id| {
-            let should_quit = {
+            let (should_quit, hide_dock) = {
                 let registry = cx.global_mut::<Self>();
-                if let Some(key) = registry.ids.remove(&window_id) {
-                    registry.open.remove(&key);
+                let key = registry.ids.remove(&window_id);
+                if let Some(key) = &key {
+                    registry.open.remove(key);
                 }
                 registry.confirming.remove(&window_id);
-                registry.should_quit()
+                (
+                    registry.should_quit(),
+                    registry.resident && key == Some(WindowKey::Main),
+                )
             };
             if should_quit {
                 cx.quit();
+            } else if hide_dock {
+                // 托盘驻留：主窗口关闭即从 Dock 隐藏，只从托盘唤回。
+                crate::app_icon::set_dock_visible(false);
             }
         });
         let pending_bounds = Rc::new(RefCell::new(HashMap::new()));
