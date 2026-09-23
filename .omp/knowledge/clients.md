@@ -37,6 +37,8 @@
 
 **两套配置平面**：引擎 config（`SettingsProvider`，~80 键，经 rinf → `db.rs config` 表）vs Dart-only 客户端偏好（主题、云 token/设备 ID、analytics、update——存 `KvStore`）。
 
+**Rust 宿主兼容与退出**：Flutter 继续消费既有 `TaskProgress`/`SegmentProgress`，`RinfEventSink` 显式跳过已被这些信号覆盖的运行态通知和已由引擎落库的活动通知，不逐帧打印未处理日志。桌面退出在窗口销毁前调用 `finalizeRust()`；hub 经 `AuxSignal` 停止 actor，等待下载取消、进度报告器排空和活动最终落库，再释放引擎写租约。关闭到托盘不停止引擎。
+
 ### 存储：`services/kv_store.dart`
 SharedPreferences 门面，**便携模式**（`portable` 标记）写 `<exe>/portable_data/settings.json`（400ms 防抖），安装模式透传。init() 全量入内存缓存，`runApp` 前必须 await。是 theme/cloud/analytics/update/device 的存储层。
 
