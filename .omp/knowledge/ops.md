@@ -20,6 +20,8 @@ Dart 与 Rust 两端写**同一目录同一文件**，统一格式 `HH:MM:SS.mmm
 
 **组件变更检测**流水线，`v*` tag 触发。`changes` job diff `PREV..TAG` 映射路径→输出（`app`/`extension`/`server`/`mobile`/`cli`），首个 tag 全量构建。**分支守卫**：稳定 `vX.Y.Z` 必须是 `origin/stable` 祖先；预览 `vX.Y.Z-rc.N` 必须在 `origin/main`；否则整条失败。
 
+**单组件补发**：`gh workflow run release.yml --ref main -f tag=<已有 v* tag> -f component=server`（也支持 `mobile`）。构建源码固定在输入 tag；Server Docker 仅从 workflow 提交覆盖 `.dockerignore` 与 `docker/server.Dockerfile`，以便修复打包而不移动已发布标签。只上传对应组件 Release，不重跑其余组件。Server 的版本号、预发布标记与 release notes 都取输入 tag；预览镜像不更新 `latest`。
+
 路径→组件映射（要点）：`fluxDown/*`→extension；`web|native/server|docker|packaging/*`→server；`native/cli/*`→cli；`native/api/*`→server+cli；`native/engine/*`→app+server+mobile+cli；`android|lib/src/mobile/*`→mobile；`lib/*`→app+mobile；`website/*`/`docs/*`/`*.md`→不构建。
 
 构建矩阵：Windows（x64+arm64，Inno 安装器+便携 zip）、扩展（Chrome+Firefox，预发布 tag 不打包扩展）、Linux（AppImage/deb/arch/tar.gz）、macOS（x64+arm64，DMG+便携）、Android（split-per-abi + universal APK，cargokit 编各 ABI cdylib）、Web SPA（一次复用）、server 多平台二进制（musl 静态）、server NAS 包（OpenWrt/QNAP/群晖）、CLI 六平台、server Docker（ghcr.io，QEMU arm64）。每个 release job 各用自己的组件 tag，跑 git-cliff（`--include-path <组件目录>`）后经 Claude Code CLI 翻译为中英双语（`<!-- fluxdown:lang:zh/en -->` 标记，失败回退原始 cliff）。
