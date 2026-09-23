@@ -2174,6 +2174,25 @@ class S {
   String get showSidebarRssDesc => _r('showSidebarRssDesc');
   String get rssSidebarEmptyHint => _r('rssSidebarEmptyHint');
   String get rssAddSource => _r('rssAddSource');
+  String get rssPageDescription => _r('rssPageDescription');
+  String get rssSubscriptions => _r('rssSubscriptions');
+  String rssUnreadCount(int n) => _r('rssUnreadCount', {'n': n});
+  String rssSelectedCount(int n) => _r('rssSelectedCount', {'n': n});
+  String get rssDownloadSelected => _r('rssDownloadSelected');
+  String get rssIgnoreSelected => _r('rssIgnoreSelected');
+  String get rssSelectVisible => _r('rssSelectVisible');
+  String get rssClearSelection => _r('rssClearSelection');
+  String get rssTaskMissing => _r('rssTaskMissing');
+  String get rssTaskCreated => _r('rssTaskCreated');
+  String rssItemsUpdated(int n) => _r('rssItemsUpdated', {'n': n});
+  String rssBatchResult(int done, int failed) =>
+      _r('rssBatchResult', {'done': done, 'failed': failed});
+  String get rssPublishedAt => _r('rssPublishedAt');
+  String get rssInvalidNumber => _r('rssInvalidNumber');
+  String get rssInvalidSizeRange => _r('rssInvalidSizeRange');
+  String get rssFeedRequired => _r('rssFeedRequired');
+  String get rssValidateBeforeSave => _r('rssValidateBeforeSave');
+  String get rssEditorAuthHint => _r('rssEditorAuthHint');
   String get rssManageTitle => _r('rssManageTitle');
   String get rssDeleteSource => _r('rssDeleteSource');
   String rssDeleteConfirmDesc(String name) =>
