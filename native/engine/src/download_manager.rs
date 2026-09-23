@@ -3778,12 +3778,13 @@ impl DownloadManager {
                 self.retry_scheduled.remove(task_id);
                 self.auto_failover_pending.remove(task_id);
                 self.auto_failover_attempts.remove(task_id);
-                if let Err(e) = self.db.delete_task(task_id).await {
-                    log_info!(
+                match self.db.delete_task(task_id).await {
+                    Ok(sources) => self.broadcast_deleted_rss_sources(sources).await,
+                    Err(e) => log_info!(
                         "[manager] duplicate cleanup {}: DB delete error: {}",
                         task_id,
                         e
-                    );
+                    ),
                 }
                 self.sink.emit(EngineEvent::DuplicateTorrentDetected {
                     task_id: task_id.to_string(),
@@ -4259,8 +4260,9 @@ impl DownloadManager {
                         "[manager] startup: removing orphan duplicate-torrent placeholder {}",
                         tid
                     );
-                    if let Err(e) = self.db.delete_task(tid).await {
-                        log_info!("[manager] startup duplicate cleanup {}: {}", tid, e);
+                    match self.db.delete_task(tid).await {
+                        Ok(sources) => self.broadcast_deleted_rss_sources(sources).await,
+                        Err(e) => log_info!("[manager] startup duplicate cleanup {}: {}", tid, e),
                     }
                 }
                 tasks.retain(|t| !orphans.contains(&t.task_id));
@@ -7254,12 +7256,22 @@ impl DownloadManager {
         self.maybe_release_bt_session().await;
     }
 
+    /// 删任务事务提交后，只广播实际修改过回链的源和一次 badge 快照。
+    async fn broadcast_deleted_rss_sources(&mut self, sources: Vec<String>) {
+        if sources.is_empty() {
+            return;
+        }
+        for source_id in sources {
+            self.rss.broadcast_items(&source_id, Vec::new()).await;
+        }
+        self.rss.broadcast_sources().await;
+    }
+
     /// Delete task record and optionally its files on disk.
     ///
     /// If the task is actively downloading, the cancellation token is triggered
-    /// first and we **await** the spawned task's `JoinHandle` so that all
-    /// network connections and file handles are fully released before we
-    /// attempt to remove files.  A 5-second timeout prevents indefinite hangs.
+    /// first and we **await** the spawned task's JoinHandle so that all
+    /// network connections and file handles are released before deletion.
     pub async fn delete_task(&mut self, task_id: &str, delete_files: bool) {
         self.auto_retry_counts.remove(task_id);
         self.auto_failover_pending.remove(task_id);
@@ -7480,8 +7492,9 @@ impl DownloadManager {
             delete_task_artifact_files(&self.db, task_id, &t.save_dir).await;
         }
 
-        if let Err(e) = self.db.delete_task(task_id).await {
-            log_info!("[manager] delete_task {}: DB delete error: {}", task_id, e);
+        match self.db.delete_task(task_id).await {
+            Ok(sources) => self.broadcast_deleted_rss_sources(sources).await,
+            Err(e) => log_info!("[manager] delete_task {}: DB delete error: {}", task_id, e),
         }
 
         // 竞争修复：若 handle 等待超时（spawned task 可能仍在运行），它可能在首次
@@ -7861,8 +7874,9 @@ impl DownloadManager {
         }
 
         // 6. Single-transaction batch DB delete.
-        if let Err(e) = self.db.delete_tasks_batch(task_ids).await {
-            log_info!("[manager] delete_tasks_batch DB error: {}", e);
+        match self.db.delete_tasks_batch(task_ids).await {
+            Ok(sources) => self.broadcast_deleted_rss_sources(sources).await,
+            Err(e) => log_info!("[manager] delete_tasks_batch DB error: {}", e),
         }
 
         // 组 GC 钩子：批量删除后清理无成员的孤儿组行（D8 生命周期）。
@@ -8571,6 +8585,10 @@ impl DownloadManager {
                 queue_id: MAIN_QUEUE_ID.to_owned(),
             });
         }
+        // 位置事件更新待排任务的 queuePosition；全量任务快照是 queue_order
+        // 已归零的权威来源，TaskQueueChanged 本身只包含归属 ID。
+        self.broadcast_queue_positions();
+        self.send_tasks_snapshot().await;
         log_info!("[manager] deleted queue: {}", queue_id);
         self.send_all_queues().await;
     }
@@ -11125,6 +11143,119 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn deleting_tasks_broadcasts_only_affected_rss_sources_after_commit() {
+        use crate::rss::model::{RssItemInfo, RssItemStatus, RssSourceInfo};
+
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect mem db");
+        let save_dir = unique_dedup_dir("rss-deletion-events");
+        let save_dir = save_dir.to_str().expect("temporary path is UTF-8");
+        for (source_id, task_id) in [("first", "t1"), ("second", "t2"), ("unaffected", "other")] {
+            db.insert_rss_source(&RssSourceInfo {
+                source_id: source_id.into(),
+                ..Default::default()
+            })
+            .await
+            .expect("insert source");
+            db.insert_rss_items(&[RssItemInfo {
+                source_id: source_id.into(),
+                guid: "episode".into(),
+                status: RssItemStatus::Downloaded,
+                task_id: task_id.into(),
+                ..Default::default()
+            }])
+            .await
+            .expect("insert item");
+        }
+        for task_id in ["t1", "t2"] {
+            db.insert_task(
+                task_id,
+                "https://feed.test/file",
+                "file",
+                save_dir,
+                3,
+                0,
+                "",
+                "",
+                "",
+                0,
+            )
+            .await
+            .expect("insert task");
+        }
+        let sink = Arc::new(RecordingSink::new());
+        let mut mgr = DownloadManager::new(
+            db.clone(),
+            DownloadManagerConfig {
+                max_concurrent: 1,
+                speed_limit_bps: 0,
+                upload_limit_bps: 0,
+                default_save_dir: save_dir.into(),
+                app_data_dir: String::new(),
+                data_dir: std::env::temp_dir(),
+                bt_config: BtConfig::default(),
+                proxy_config: ProxyConfig::default(),
+                user_agent: String::new(),
+            },
+            sink.clone(),
+            Arc::new(crate::NoopSelection),
+        )
+        .expect("construct manager");
+
+        mgr.delete_task("t1", false).await;
+        let first = sink.events();
+        let items: Vec<_> = first
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::RssItemsChanged {
+                    source_id,
+                    items,
+                    notify_titles,
+                } => {
+                    assert!(notify_titles.is_empty());
+                    assert_eq!(items[0].status, RssItemStatus::Ignored);
+                    assert!(items[0].task_id.is_empty());
+                    Some(source_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(items, ["first"]);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::RssSourcesChanged(_)))
+                .count(),
+            1
+        );
+
+        mgr.delete_tasks_batch(&["t2".into()], false).await;
+        let events = sink.events();
+        let second = &events[first.len()..];
+        let items: Vec<_> = second
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::RssItemsChanged {
+                    source_id, items, ..
+                } => {
+                    assert_eq!(items[0].status, RssItemStatus::Ignored);
+                    Some(source_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(items, ["second"]);
+        assert_eq!(
+            second
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::RssSourcesChanged(_)))
+                .count(),
+            1
+        );
+    }
+
     /// 删除队列时 DB 重归属任务，事件流必须把受影响的任务定向迁回主队列。
     #[tokio::test]
     async fn delete_queue_emits_task_migrations_before_queue_list() {
@@ -11185,7 +11316,38 @@ mod tests {
             .collect();
         moved.sort_unstable();
         assert_eq!(moved, ["a", "b"]);
-        assert!(matches!(events.last(), Some(EngineEvent::QueuesChanged(_))));
+        let migration_end = events
+            .iter()
+            .rposition(|event| matches!(event, EngineEvent::TaskQueueChanged { .. }))
+            .expect("migration event");
+        let positions_index = events
+            .iter()
+            .position(|event| matches!(event, EngineEvent::QueuePositionsChanged(_)))
+            .expect("position event");
+        let snapshot_index = events
+            .iter()
+            .position(|event| matches!(event, EngineEvent::TasksSnapshot(_)))
+            .expect("task snapshot");
+        let queues_index = events
+            .iter()
+            .position(|event| matches!(event, EngineEvent::QueuesChanged(_)))
+            .expect("queue list");
+        assert!(
+            migration_end < positions_index
+                && positions_index < snapshot_index
+                && snapshot_index < queues_index
+        );
+        let EngineEvent::TasksSnapshot(tasks) = &events[snapshot_index] else {
+            panic!("task snapshot missing")
+        };
+        for id in ["a", "b"] {
+            let task = tasks
+                .iter()
+                .find(|task| task.task_id == id)
+                .expect("migrated task");
+            assert_eq!(task.queue_id, MAIN_QUEUE_ID);
+            assert_eq!(task.queue_order, 0, "snapshot must carry DB-reset order");
+        }
         for id in ["a", "b"] {
             assert_eq!(
                 db.load_task_by_id(id)

@@ -29,7 +29,7 @@
 - `rss_sources`(id PK, `provider_id`/`provider_config`（订阅 provider 适配器与其不透明配置，旧数据默认 `rss`/空）, url, name, enabled, auto_download, start_paused, queue_id, save_dir, interval_minutes, include/exclude_pattern, use_regex, smart_episode, size_min/max_bytes, send_referer, notify_on_download, max_per_fetch, cookies, user_agent, proxy_url, last_fetch_at, last_success_at, last_error, fail_count, `seeded`（首轮是否已完成）, position)
 - `rss_items`(复合 PK source_id+guid, title, link, enclosure_url/length, `resolver_item`（插件二段解析标识，空 = 普通直链）, pub_date, fetched_at, status 0..5, task_id 回链, episode_key, reason 原因码；`ON DELETE CASCADE` 于 rss_sources)
 
-**内置队列**: `main`（主）/`later`（稍后下载），播种于 `Engine::new`，不可删/改名；存量 `queue_id=''` 迁入 `main`。
+**内置队列**: `main`（主）/`later`（稍后下载），播种于 `Engine::new`，不可删/改名；存量 `queue_id=''` 迁入 `main`。删除命名队列后，任务归属、排队位置与持久排序都要同步：`TaskQueueChanged` 只带归属，`QueuePositionsChanged` 只带待排位置，`TasksSnapshot` 才是 `queue_order` 归零后的权威来源。
 
 **任务活动与实时采样**：`task_activity.rs` 拥有源端活动代理，`db.rs` 的活动表/保留标记在 SQLite 与 PostgreSQL 同步维护。状态边沿、完整错误、实际重试、分段拆分及 CDN 语义事件先持久化再广播；高频进度不逐帧入库。ID 在同一数据库内跨重启单调，任务删除级联清理；保留约束及分页上限以 `db.rs` 常量为准，清理过的历史有逐任务截断标记。所有宿主的 `progress_reporter` 必须使用 `Engine::activity_sink`，否则绕过统一记录；关闭时冲刷有超时并报告真实失败。`transfer_activity.rs` 的 RAII 计数只覆盖真实传输生命周期，采样携带源端单调序号；分段几何、活跃传输、配置上限与 BT peers 是不同事实，不能相互推算。
 
@@ -87,6 +87,8 @@
 - `rss/`（`model`/`parser`/`filter`/`mod`）：订阅自动下载。`RssManager` 挂在 `DownloadManager.rss` 上；宿主只提供 60s 节拍（`tick_rss_sources()`）与回流 drain（`on_rss_event()`），抓取 off-actor，建任务仍收敛到 `create_task`。`subscription::SubscriptionProvider` 是 RSS 与插件订阅共用的 provider 分支：内置 `rss` provider 保持原流程；插件在 manifest 的 `subscriptions` 声明 `providerId` + `entry`，由 `PluginManager` 动态路由到 `globalThis.subscribe(ctx)`，返回规范化 `ParsedFeed`，并可通过 `flux.fetch` 请求平台接口。provider 不负责调度、退避、去重、过滤、落库或建任务。三层去重：guid → 单轮上限（超额留 `New` 下轮从旧到新续派）→ 智能剧集去重（识别失败即放行）。失败指数退避封顶 6h，**不自动停用订阅**。`filter.rs` 是纯函数单测主战场，**Dart/TS 各有一份逐条对齐的镜像**（`lib/src/models/rss_filter.dart`、`web/src/lib/rss-filter.ts`）供规则预览用——改任一侧必须同步三处。
 
   **「无人值守」是 RSS 的核心不变式**——订阅可能半夜抓到 5 集,任何需要用户点一下才能继续的东西都是 bug:① BT 条目建任务时 `NewTaskSpec.unattended_selection=true`,**在启动前**把「已确认全部文件」落库(`save_bt_selected_files(id, &[], true)`)并落 `tasks.unattended=1`(HLS/变体选择也静默),否则 `do_start_task` 会走 `HostSelection` 弹 5 次文件选择框,而用户点「取消」后条目已被标记「已下载」,状态就撒谎了;② `create_task` 内部自发建任务不经过 Dart 的建任务路径,**必须显式补发** `load_and_send_all_tasks()`——`TaskProgress` 信号不带 `queue_id`,不补发的话新任务在 UI 里不属于任何队列;③ 手动「重新下载」对**任何**状态(含已下载)都放行,挡住重下没有任何好处,只会逼用户去别处找种子。
+
+  **删除任务不触发自动重下**：单删/批删在同一事务清空 RSS 条目的任务回链，将原 `Downloaded` 改为 `Ignored`（已读），其余处置状态保留；不能退回 `New`，否则下一轮自动抓取会重新派发。提交后仅向受影响订阅广播条目快照及源计数，手动下载仍对任何状态开放。
 
 ### 受管组件子系统（`components/`，`components` feature）
 外部二进制 **ffmpeg + yt-dlp** 的按需安装器/解析器（**不打包**，合规边界——用户在设置「组件」页触发下载）。解析优先级 `manual`（config path）→ `managed`（`<data_dir>/bin/`）→ `system` PATH，wire 为 `ComponentSource{Manual,Managed,System,None}`。ffmpeg = BtbN 静态归档（取单文件，macOS 不支持受管）；yt-dlp = 单平台二进制（全平台）。版本列表经官方镜像 `fluxdown.zerx.dev/api/components` + GitHub 兜底。**被两处消费**：插件 `flux.ffmpeg`/`flux.ytdlp` 能力面 + 设置「组件」UI。
