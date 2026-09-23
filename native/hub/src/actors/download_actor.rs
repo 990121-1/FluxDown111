@@ -538,7 +538,7 @@ pub async fn run(db_dir: PathBuf) -> Result<(), ActorError> {
         tokio::spawn(download_manager::progress_reporter(
             rx,
             engine.db.clone(),
-            sink.clone(),
+            engine.activity_sink.clone(),
         ));
     }
 

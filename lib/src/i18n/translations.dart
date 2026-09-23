@@ -376,6 +376,41 @@ class S {
   String get detailTabGeneral => _r('detailTabGeneral');
   String get detailTabQueue => _r('detailTabQueue');
   String get detailTabLog => _r('detailTabLog');
+  String get taskActiveTransfers => _r('taskActiveTransfers');
+  String get taskConnectedPeers => _r('taskConnectedPeers');
+  String get detailActiveTransfers => _r('detailActiveTransfers');
+  String get detailConnectedPeers => _r('detailConnectedPeers');
+  String get detailActivityLoading => _r('detailActivityLoading');
+  String get detailActivityLoadMore => _r('detailActivityLoadMore');
+  String get detailActivityRetry => _r('detailActivityRetry');
+  String get detailActivityQueryFailed => _r('detailActivityQueryFailed');
+  String get detailActivityTruncated => _r('detailActivityTruncated');
+  String detailActivityRetainedRange(String oldest, String newest) =>
+      _r('detailActivityRetainedRange', {'oldest': oldest, 'newest': newest});
+  String get detailActivityKindCreated => _r('detailActivityKindCreated');
+  String get detailActivityKindStarted => _r('detailActivityKindStarted');
+  String get detailActivityKindPaused => _r('detailActivityKindPaused');
+  String get detailActivityKindResumed => _r('detailActivityKindResumed');
+  String get detailActivityKindCompleted => _r('detailActivityKindCompleted');
+  String get detailActivityKindFailed => _r('detailActivityKindFailed');
+  String get detailActivityKindDeleted => _r('detailActivityKindDeleted');
+  String get detailActivityKindRetry => _r('detailActivityKindRetry');
+  String get detailActivityKindRetrying => _r('detailActivityKindRetrying');
+  String get detailActivityKindStatusChanged =>
+      _r('detailActivityKindStatusChanged');
+  String get detailActivityKindStatus => _r('detailActivityKindStatus');
+  String get detailActivityKindError => _r('detailActivityKindError');
+  String get detailActivityKindSplit => _r('detailActivityKindSplit');
+  String get detailActivityKindCdnPool => _r('detailActivityKindCdnPool');
+  String get detailActivityKindCdnKick => _r('detailActivityKindCdnKick');
+  String get detailActivityKindCdnBreaker => _r('detailActivityKindCdnBreaker');
+  String get detailActivityKindCdnFallback =>
+      _r('detailActivityKindCdnFallback');
+  String get detailActivityKindCdnSummary => _r('detailActivityKindCdnSummary');
+  String get detailActivityKindJournalOverflow =>
+      _r('detailActivityKindJournalOverflow');
+  String get detailActivityJournalGap => _r('detailActivityJournalGap');
+  String get detailActivityKindUnknown => _r('detailActivityKindUnknown');
   String get detailTabAdvanced => _r('detailTabAdvanced');
   String get detailBoostActive => _r('detailBoostActive');
   String get infoProtocolSource => _r('infoProtocolSource');

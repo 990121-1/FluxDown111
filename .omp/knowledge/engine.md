@@ -14,7 +14,7 @@
 
 ### 数据库（`native/engine/src/db.rs`，sqlx `Any` 池）
 
-**双后端**：URL scheme 选后端（`sqlite:`/`postgres:`）；两份 DDL 常量（`SQLITE_SCHEMA`/`POSTGRES_SCHEMA`，仅 `BLOB→BYTEA` 与字节列 `BIGINT` 不同）；运行时 SQL 统一 `$N` 占位符；`add_column_if_missing` 幂等迁移（新库建表即全列，旧桌面库经 ALTER 升级）。SQLite 侧 WAL + 外键 + busy_timeout=5000。
+**双后端**：URL scheme 选后端（`sqlite:`/`postgres:`）；两份 DDL 常量（`SQLITE_SCHEMA`/`POSTGRES_SCHEMA`）处理二进制、字节计数与自增主键的后端差异；运行时 SQL 统一 `$N` 占位符；`add_column_if_missing` 幂等迁移（新库建表即全列，旧桌面库经 ALTER 升级）。SQLite 侧 WAL + 外键 + busy_timeout=5000。
 
 **当前表（列以 db.rs 为准，此处仅索引）**：
 - `tasks`(id PK, url, file_name, save_dir, status, total/downloaded_bytes, segments, created_at, error_message, proxy_url, queue_id, checksum, ignore_tls_errors, bt_selected_files, bt_custom_name, orig_etag, orig_last_modified, audio_url, file_missing, `range_verified`（配额端点续传验证）, queue_order；迁移列：cookies, referrer, extra_headers, resolver_plugin_id, segments_epoch, completed_at, group_id, resolver_item, rss_source_id（RSS 溯源，空=非 RSS 来源）, `origin_url`（展示用真实来源；`.torrent` 任务的 `url` 是 `torrent-file://local` 哨兵，「复制链接」类 UI **一律**读它并空则回退 `url`——Dart `DownloadTask.shareUrl` / web `taskShareUrl()`）, `auto_route`（`ProxyMode::Auto` 的任务级最终链路，wire 标签见 `auto_proxy::route`；空=非 Auto）, `unattended`（无人值守创建标记，`NewTaskSpec::unattended_selection` 置位：RSS / 外部接管命中「免打扰跳过二次选择」config `silent_skip_selection`；start/resume 读它让 HLS/DASH 画质与插件变体静默取默认；BT 不读此列——建任务时已按「全选」写 bt_selected_files））
@@ -30,6 +30,8 @@
 - `rss_items`(复合 PK source_id+guid, title, link, enclosure_url/length, `resolver_item`（插件二段解析标识，空 = 普通直链）, pub_date, fetched_at, status 0..5, task_id 回链, episode_key, reason 原因码；`ON DELETE CASCADE` 于 rss_sources)
 
 **内置队列**: `main`（主）/`later`（稍后下载），播种于 `Engine::new`，不可删/改名；存量 `queue_id=''` 迁入 `main`。
+
+**任务活动与实时采样**：`task_activity.rs` 拥有源端活动代理，`db.rs` 的活动表/保留标记在 SQLite 与 PostgreSQL 同步维护。状态边沿、完整错误、实际重试、分段拆分及 CDN 语义事件先持久化再广播；高频进度不逐帧入库。ID 在同一数据库内跨重启单调，任务删除级联清理；保留约束及分页上限以 `db.rs` 常量为准，清理过的历史有逐任务截断标记。所有宿主的 `progress_reporter` 必须使用 `Engine::activity_sink`，否则绕过统一记录；关闭时冲刷有超时并报告真实失败。`transfer_activity.rs` 的 RAII 计数只覆盖真实传输生命周期，采样携带源端单调序号；分段几何、活跃传输、配置上限与 BT peers 是不同事实，不能相互推算。
 
 ---
 
