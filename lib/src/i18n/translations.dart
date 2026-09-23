@@ -2302,6 +2302,7 @@ class S {
   String get settingsCatNotifyDesc => _r('settingsCatNotifyDesc');
   String get notifyGroupSystem => _r('notifyGroupSystem');
   String get notifyGroupWebhook => _r('notifyGroupWebhook');
+  String get webhookNavTitle => _r('webhookNavTitle');
   String get webhookAddEndpoint => _r('webhookAddEndpoint');
   String get webhookDeliveryLog => _r('webhookDeliveryLog');
   String get webhookEmptyTitle => _r('webhookEmptyTitle');
@@ -2372,6 +2373,7 @@ class S {
   String get webhookLogSimulateHint => _r('webhookLogSimulateHint');
   String get webhookLogPending => _r('webhookLogPending');
   String get webhookSimulateNoTarget => _r('webhookSimulateNoTarget');
+  String get webhookSimulateDispatched => _r('webhookSimulateDispatched');
   String get webhookLogClear => _r('webhookLogClear');
   String get webhookLogResponse => _r('webhookLogResponse');
   String get webhookLogHint4xx => _r('webhookLogHint4xx');
