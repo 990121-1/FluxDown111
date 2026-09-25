@@ -2,7 +2,6 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-mod account_port;
 mod actions;
 mod agent_client;
 mod app;

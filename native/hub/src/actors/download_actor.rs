@@ -3013,6 +3013,7 @@ async fn handle_api_command(
                 let outcome = rx.await.unwrap_or(ResolvePreviewOutcome {
                     name: String::new(),
                     items: Vec::new(),
+                    variants: Vec::new(),
                     error: "resolve preview worker dropped".to_string(),
                 });
                 let _ = ack.send(outcome);

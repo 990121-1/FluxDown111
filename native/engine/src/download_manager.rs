@@ -1206,8 +1206,23 @@ pub struct CreateGroupSpec {
 pub struct ResolvePreviewOutcome {
     pub name: String,
     pub items: Vec<crate::model::ManifestItemInfo>,
+    pub variants: Vec<ResolvePreviewVariantInfo>,
     /// 无错误时为空。
     pub error: String,
+}
+
+/// 单文件 resolver 的预览变体；供浏览器扩展在建任务前直接展示画质/格式。
+pub struct ResolvePreviewVariantInfo {
+    pub label: String,
+    pub url: String,
+    pub audio_url: String,
+    pub file_name: String,
+    pub size: i64,
+    pub bandwidth: i64,
+    pub width: i64,
+    pub height: i64,
+    pub container: String,
+    pub headers: HashMap<String, String>,
 }
 
 impl ResolvePreviewOutcome {
@@ -1217,6 +1232,7 @@ impl ResolvePreviewOutcome {
         Self {
             name: String::new(),
             items: Vec::new(),
+            variants: Vec::new(),
             error: String::new(),
         }
     }
@@ -1226,6 +1242,7 @@ impl ResolvePreviewOutcome {
         Self {
             name: String::new(),
             items: Vec::new(),
+            variants: Vec::new(),
             error,
         }
     }
@@ -2022,18 +2039,71 @@ impl DownloadManager {
                 Err(panic) => Err(crate::plugin::PluginError::Runtime(panic_message(&panic))),
             };
             let outcome = match result {
-                Ok(Some(res)) => match res.manifest {
-                    Some(manifest) => ResolvePreviewOutcome {
-                        name: manifest.name,
-                        items: manifest
-                            .items
+                Ok(Some(res)) => {
+                    if let Some(manifest) = res.manifest {
+                        ResolvePreviewOutcome {
+                            name: manifest.name,
+                            items: manifest
+                                .items
+                                .into_iter()
+                                .map(manifest_item_to_info)
+                                .collect(),
+                            variants: Vec::new(),
+                            error: String::new(),
+                        }
+                    } else if !res.variants.is_empty() {
+                        let fallback_name = res.file_name.clone().unwrap_or_default();
+                        let fallback_audio = res.audio_url.clone().unwrap_or_default();
+                        let fallback_size = res.total_bytes.unwrap_or(0).max(0);
+                        let headers = res.extra_headers.clone().unwrap_or_default();
+                        let variants = res
+                            .variants
                             .into_iter()
-                            .map(manifest_item_to_info)
-                            .collect(),
-                        error: String::new(),
-                    },
-                    None => ResolvePreviewOutcome::empty(),
-                },
+                            .map(|variant| ResolvePreviewVariantInfo {
+                                label: variant.label,
+                                url: variant.url,
+                                audio_url: variant
+                                    .audio_url
+                                    .unwrap_or_else(|| fallback_audio.clone()),
+                                file_name: variant
+                                    .file_name
+                                    .unwrap_or_else(|| fallback_name.clone()),
+                                size: variant.total_bytes.unwrap_or(fallback_size).max(0),
+                                bandwidth: variant.bandwidth,
+                                width: variant.width,
+                                height: variant.height,
+                                container: variant.container,
+                                headers: headers.clone(),
+                            })
+                            .collect();
+                        ResolvePreviewOutcome {
+                            name: fallback_name,
+                            items: Vec::new(),
+                            variants,
+                            error: String::new(),
+                        }
+                    } else if !res.url.is_empty() {
+                        ResolvePreviewOutcome {
+                            name: res.file_name.clone().unwrap_or_default(),
+                            items: Vec::new(),
+                            variants: vec![ResolvePreviewVariantInfo {
+                                label: "Original".to_string(),
+                                url: res.url,
+                                audio_url: res.audio_url.unwrap_or_default(),
+                                file_name: res.file_name.unwrap_or_default(),
+                                size: res.total_bytes.unwrap_or(0).max(0),
+                                bandwidth: 0,
+                                width: 0,
+                                height: 0,
+                                container: String::new(),
+                                headers: res.extra_headers.unwrap_or_default(),
+                            }],
+                            error: String::new(),
+                        }
+                    } else {
+                        ResolvePreviewOutcome::empty()
+                    }
+                }
                 Ok(None) => ResolvePreviewOutcome::empty(),
                 Err(e) => ResolvePreviewOutcome::failed(e.to_string()),
             };

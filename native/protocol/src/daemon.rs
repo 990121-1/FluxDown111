@@ -869,6 +869,37 @@ pub struct ResolvePreviewResponse {
     pub error: String,
     #[serde(default)]
     pub items: Vec<PreviewItemDto>,
+    /// 单文件 resolver（如 yt-dlp）解析出的可选画质/格式。
+    /// 与 `items`（多文件清单）互补；为空表示没有可直接展示的单文件变体。
+    #[serde(default)]
+    pub variants: Vec<PreviewResolvedVariantDto>,
+}
+
+/// 单文件 resolver 的预览变体。与 [`ResolveVariantOptionDto`] 不同，这里携带
+/// 浏览器面板直接发起下载所需的最终 URL/音轨/文件名/请求头。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewResolvedVariantDto {
+    pub label: String,
+    pub url: String,
+    #[serde(default)]
+    pub audio_url: String,
+    #[serde(default)]
+    pub file_name: String,
+    /// 已知大小（字节），未知为 0。
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default)]
+    pub bandwidth: i64,
+    #[serde(default)]
+    pub width: i64,
+    #[serde(default)]
+    pub height: i64,
+    #[serde(default)]
+    pub container: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 /// [`ResolvePreviewResponse::items`] 的单个清单条目。

@@ -1,8 +1,7 @@
-//! 设置窗口：账户 / 扩展视图各自 attach 会话；边界持久化。
+//! 设置窗口：扩展视图 attach 会话；边界持久化。
 
 use std::sync::Arc;
 
-use fluxdown_ui_account::AccountView;
 use fluxdown_ui_extensions::ExtensionsView;
 use fluxdown_ui_i18n::keys;
 use fluxdown_ui_settings::{SettingsContentSlots, SettingsView};
@@ -11,7 +10,6 @@ use gpui::{App, AppContext as _, px, size};
 use gpui_component::Root;
 
 use crate::{
-    account_port::AgentAccountPort,
     app::Desktop,
     capability_ports::AgentExtensionsPort,
     session::attach,
@@ -38,23 +36,20 @@ pub fn open(cx: &mut App) {
     options.window_min_size = Some(size(px(1000.), px(600.)));
 
     WindowRegistry::open_or_focus(cx, WindowKey::Settings, options, move |window, cx| {
-        let account_port = Arc::new(AgentAccountPort::new(client.clone()));
         let extensions_port = Arc::new(AgentExtensionsPort::new(client.clone()));
-        let account = cx.new(|cx| AccountView::new(translator.clone(), account_port, window, cx));
         let extensions = cx.new(|cx| ExtensionsView::new(translator.clone(), extensions_port, cx));
         let settings = cx.new(|cx| {
             SettingsView::new(
                 translator.clone(),
                 settings_store,
                 SettingsContentSlots {
-                    account: Some(account.clone().into()),
+                    account: None,
                     extensions: Some(extensions.clone().into()),
                 },
                 window,
                 cx,
             )
         });
-        attach(&session, &account, cx);
         attach(&session, &extensions, cx);
         let window_view =
             cx.new(|cx| AuxiliaryWindowView::new(translator, keys::SETTINGS, settings.into(), cx));

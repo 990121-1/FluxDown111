@@ -71,7 +71,7 @@ var PLAYER_CLIENTS = 'default,tv,android_vr,ios,web_safari';
 
 // variants 附加的分辨率梯度（从高到低；实际取「不超过该高度的最优档」，源分
 // 辨率不足则跳过，非精确匹配）。加上默认档与纯音频档，实际条数远低于上限。
-var VARIANT_HEIGHT_TIERS = [2160, 1440, 1080, 720, 480];
+var VARIANT_HEIGHT_TIERS = [2160, 1440, 1080, 720, 480, 360, 240, 144];
 // variants 数组条数上限（引擎侧硬上限 50，这里按 UI 可用性收紧）。
 var MAX_VARIANTS = 10;
 var INSTAGRAM_REELS_INITIAL_DOC_ID = '29628758406714645';
@@ -267,6 +267,26 @@ function buildFormat(preferMp4, platformId) {
   // ffmpeg mux. Prefer the progressive aliases for the default Facebook/Reels path so a clean
   // install produces one playable MP4 even before ffmpeg has finished installing.
   if (platformId === 'facebook') return 'hd/sd/best';
+  // YouTube 的 m3u8/HLS 表面上有时会被 yt-dlp 标成同时含音视频，但 FluxDown
+  // 的 HLS 下载器目前按单播放清单处理；拿这种格式做「最终 MP4」可能只留下
+  // 视频轨。这里优先选择真正的 HTTP(S) progressive / direct track：
+  // 低画质若有已混流 direct MP4 就直接用；高画质则走 direct video + direct
+  // m4a，交给引擎的 track-pair + ffmpeg mux。这样可稳定保留声音。
+  if (platformId === 'youtube') {
+    if (preferMp4) {
+      return (
+        'best[protocol^=http][ext=mp4][vcodec!=none][acodec!=none]/' +
+        'bestvideo[protocol^=http][ext=mp4]+bestaudio[protocol^=http][ext=m4a]/' +
+        'bestvideo[protocol^=http]+bestaudio[protocol^=http]/' +
+        'best[protocol^=http]/best'
+      );
+    }
+    return (
+      'best[protocol^=http][vcodec!=none][acodec!=none]/' +
+      'bestvideo[protocol^=http]+bestaudio[protocol^=http]/' +
+      'best[protocol^=http]/best'
+    );
+  }
   if (preferMp4) {
     return (
       'best[ext=mp4][vcodec!=none][acodec!=none]/' +
@@ -343,6 +363,16 @@ function headersOf(f, info) {
   return keys.length ? out : null;
 }
 
+function isDirectHttpFormat(f) {
+  if (!f || !f.url) return false;
+  var protocol = String(f.protocol || '').toLowerCase();
+  if (protocol === 'http' || protocol === 'https') return true;
+  if (protocol.indexOf('m3u8') >= 0 || protocol.indexOf('dash') >= 0) return false;
+  var url = String(f.url).toLowerCase();
+  if (url.indexOf('/manifest/hls') >= 0 || url.indexOf('.m3u8') >= 0) return false;
+  return /^https?:\/\//.test(url);
+}
+
 // 从完整格式列表（info.formats，不受 -f 选择器影响）中选出最佳纯音频轨
 // （vcodec=none 且 acodec!=none）。preferMp4 时优先 m4a（AAC 容器，兼容性更
 // 好），其余情形按码率/文件大小取最高。供多个 video-only 变体共享配对音频。
@@ -357,6 +387,7 @@ function pickBestAudio(formats, preferMp4) {
     if (!hasA || hasV) continue;
     var score = (Number(f.abr) || Number(f.tbr) || 0) * 1000 + sizeOf(f) / 1e6;
     if (preferMp4 && f.ext === 'm4a') score += 1e9;
+    if (isDirectHttpFormat(f)) score += 1e12;
     if (score > bestScore) {
       bestScore = score;
       best = f;
@@ -369,6 +400,7 @@ function pickBestAudio(formats, preferMp4) {
 // 轨（可能是纯视频轨，也可能是已混流轨）。preferMp4 时同等条件优先 mp4 容器。
 function pickVideoAtOrBelow(formats, targetHeight, preferMp4) {
   var best = null;
+  var bestHeight = -1;
   var bestScore = -1;
   for (var i = 0; i < formats.length; i++) {
     var f = formats[i];
@@ -377,9 +409,16 @@ function pickVideoAtOrBelow(formats, targetHeight, preferMp4) {
     if (!hasV) continue;
     var h = Number(f.height) || 0;
     if (h <= 0 || h > targetHeight) continue;
-    var score = h * 1e6 + (Number(f.tbr) || 0);
-    if (preferMp4 && f.ext === 'mp4') score += 1e12;
-    if (score > bestScore) {
+    // 解析度必须是第一优先：先锁定「<= target 的最高 height」，不能让
+    // direct/mp4/muxed 等偏好把 360p 推到 2160p 前面。只在同一 height 内
+    // 比较协议/容器/是否已混流/码率。
+    if (h < bestHeight) continue;
+    var score = Number(f.tbr) || 0;
+    if (isDirectHttpFormat(f)) score += 1e9;
+    if (preferMp4 && f.ext === 'mp4') score += 1e8;
+    if (f.acodec && f.acodec !== 'none') score += 1e7;
+    if (h > bestHeight || score > bestScore) {
+      bestHeight = h;
       bestScore = score;
       best = f;
     }

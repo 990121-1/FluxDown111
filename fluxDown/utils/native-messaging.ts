@@ -33,6 +33,8 @@ const PING_TIMEOUT_MS = 4000;
 // 任务面板轮询超时：不走 sendWithRetry（失败即视为"未连接"，由 popup/alarm
 // 轮询下一轮自然重试），短超时避免 App 无响应时长时间阻塞 UI 刷新。
 const TASKS_POLL_TIMEOUT_MS = 3000;
+// yt-dlp resolver timeout is up to 45s; allow cold-start + IPC overhead.
+const RESOLVE_PREVIEW_TIMEOUT_MS = 55_000;
 
 // ──────────────────────────────────────────────────────────────
 // 类型定义
@@ -87,6 +89,36 @@ export interface ApiResponse {
    * action:"tasks" 响应携带的任务列表（仅 "tasks" action 使用，其余 action 不设置）。
    */
   tasks?: TaskBrief[];
+  resolvePreview?: ResolvePreviewResponse;
+}
+
+export interface ResolvedPreviewVariant {
+  label: string;
+  url: string;
+  audioUrl?: string;
+  fileName?: string;
+  size?: number;
+  bandwidth?: number;
+  width?: number;
+  height?: number;
+  container?: string;
+  headers?: Record<string, string>;
+}
+
+export interface ResolvePreviewResponse {
+  name: string;
+  sourceUrl: string;
+  error?: string;
+  items?: unknown[];
+  variants?: ResolvedPreviewVariant[];
+}
+
+export interface ResolvePreviewRequest {
+  url: string;
+  cookies?: string;
+  referrer?: string;
+  userAgent?: string;
+  extraHeaders?: Record<string, string>;
 }
 
 /**
@@ -168,6 +200,7 @@ function getPort(): chrome.runtime.Port | null {
       message: msg.message,
       taskId: msg.taskId,
       tasks: Array.isArray(msg.tasks) ? (msg.tasks as TaskBrief[]) : undefined,
+      resolvePreview: msg.resolvePreview,
     });
   });
 
@@ -319,6 +352,23 @@ export async function nmhSendDownloadRequest(
     ...request,
     referrer: sanitizeReferrer(request.referrer),
   } as Record<string, any>);
+}
+
+/** Ask the local resolver stack (plugins/yt-dlp) for the page's selectable variants. */
+export async function nmhResolvePreview(
+  request: ResolvePreviewRequest,
+): Promise<ApiResponse> {
+  return sendWithRetry(
+    "resolve_preview",
+    {
+      url: request.url,
+      cookies: request.cookies || "",
+      referrer: sanitizeReferrer(request.referrer),
+      userAgent: request.userAgent || "",
+      extraHeaders: request.extraHeaders || {},
+    },
+    RESOLVE_PREVIEW_TIMEOUT_MS,
+  );
 }
 
 // NMH/hub 两端对单帧强制 1MB 上限；留给 action/msg_id 等帧头开销及安全冗余，

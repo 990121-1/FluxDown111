@@ -704,6 +704,22 @@ impl ApiHost for HubApiHost {
                 .into_iter()
                 .map(manifest_item_to_preview_dto)
                 .collect(),
+            variants: outcome
+                .variants
+                .into_iter()
+                .map(|variant| fluxdown_protocol::PreviewResolvedVariantDto {
+                    label: variant.label,
+                    url: variant.url,
+                    audio_url: variant.audio_url,
+                    file_name: variant.file_name,
+                    size: variant.size,
+                    bandwidth: variant.bandwidth,
+                    width: variant.width,
+                    height: variant.height,
+                    container: variant.container,
+                    headers: variant.headers,
+                })
+                .collect(),
         })
     }
 

@@ -42,6 +42,7 @@ import {
   nmhTaskOp,
   nmhOpenFile,
   nmhRevealFile,
+  nmhResolvePreview,
   nmhWarmupNativeHost,
 } from "@/utils/native-messaging";
 import type {
@@ -2976,6 +2977,39 @@ export default defineBackground(() => {
         };
       }
 
+      // --- Content Script / Popup: 让桌面端 resolver（yt-dlp 等）返回完整画质清单 ---
+      // 这条链路对标 IDM：浏览器负责识别“当前是一个视频页面”，真正的格式解析
+      // 交给本机原生解析器，避免只靠 webRequest 嗅探而漏掉 YouTube adaptive formats。
+      case "resolvePageVariants": {
+        const pageUrl =
+          (typeof message.url === "string" && message.url) || sender.tab?.url || "";
+        if (!/^https?:\/\//i.test(pageUrl)) {
+          return { success: false, message: "No resolvable page URL" };
+        }
+
+        let cookieString = "";
+        try {
+          const cookieRows = await Promise.race([
+            browser.cookies.getAll({ url: pageUrl }),
+            new Promise<chrome.cookies.Cookie[]>((_, reject) =>
+              setTimeout(() => reject(new Error("cookies timeout")), 800),
+            ),
+          ]);
+          cookieString = cookieRows.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
+        } catch {
+          // Public videos can resolve without cookies; keep going.
+        }
+
+        const userAgent = navigator.userAgent || "";
+        return nmhResolvePreview({
+          url: pageUrl,
+          cookies: cookieString,
+          referrer: pageUrl,
+          userAgent,
+          extraHeaders: userAgent ? { "User-Agent": userAgent } : {},
+        });
+      }
+
       // --- Content Script UI / Popup: 清空指定 tab 的嗅探资源列表（#559）---
       // 长会话 SPA（抖音等）不断切换播放会话会持续累积嗅探资源，提供
       // 一键清空入口。清空后同步刷新 badge 并推送空列表给页内面板，
@@ -3037,6 +3071,11 @@ export default defineBackground(() => {
         // fileSize = -1 → 大小未知但确认是下载资源，跳过 probe
         // fileSize = 0/undefined → 正常 probe（仅限手动添加的 URL）
         const effectiveFileSize = message.fileSize || resFileSize || -1;
+        const messageHeaders =
+          message.headers && typeof message.headers === "object"
+            ? (message.headers as Record<string, string>)
+            : undefined;
+        const effectiveHeaders = mergeStoredHeaders(messageHeaders, resHeaders);
         const sent = await sendToFluxDown(
           url,
           message.referrer,
@@ -3045,7 +3084,7 @@ export default defineBackground(() => {
           message.mimeType,
           undefined,
           resCookies,
-          resHeaders,
+          effectiveHeaders,
           // 离散音视频轨对：内容脚本清晰度选择小窗传来的音频轨 URL（可选）。
           message.audioUrl as string | undefined,
         );
@@ -3071,6 +3110,7 @@ export default defineBackground(() => {
           filename?: string;
           fileSize?: number;
           mimeType?: string;
+          headers?: Record<string, string>;
         }>;
         if (!Array.isArray(rawItems) || rawItems.length === 0) {
           return { success: false, message: "No items" };
@@ -3143,7 +3183,10 @@ export default defineBackground(() => {
             // 策略 1：从 webRequest 缓存获取认证信息
             const itemAuth = extractAuthFromCache(item.url);
             let cookieString = itemAuth.cookies || "";
-            let extraHeaders: Record<string, string> = itemAuth.headers || {};
+            let extraHeaders: Record<string, string> = {
+              ...(item.headers || {}),
+              ...(itemAuth.headers || {}),
+            };
             if (itemAuth.cookies || itemAuth.headers) {
               requestHeaderCache.delete(item.url);
             }

@@ -3,17 +3,14 @@
 //! 页面闭包只捕获 `Entity<SettingsStore>` 与预先解析好的文案；
 //! 所有键名、范围、枚举值以 `fluxdown_protocol` 目录为准。
 
-pub(crate) mod about;
 pub(crate) mod api;
 pub(crate) mod appearance;
 pub(crate) mod bt;
 pub(crate) mod categories;
 pub(crate) mod category_dialog;
-pub(crate) mod doctor;
 pub(crate) mod download;
 pub(crate) mod ed2k;
 pub(crate) mod general;
-pub(crate) mod notify;
 pub(crate) mod proxy;
 pub(crate) mod site_auth;
 pub(crate) mod subscription;
@@ -158,47 +155,6 @@ impl SectionContext<'_> {
         let get = self.store();
         let set = self.store();
         Control::input(
-            move |cx: &App| SharedString::from(get.read(cx).pref_str(key, default)),
-            move |value: SharedString, cx: &mut App| {
-                set.update(cx, |store, cx| {
-                    store.set_pref_str(key, value.to_string(), cx)
-                });
-            },
-        )
-    }
-
-    pub(crate) fn pref_number(
-        &self,
-        key: &'static str,
-        default: i64,
-        min: i64,
-        max: i64,
-    ) -> Control {
-        let get = self.store();
-        let set = self.store();
-        Control::number(
-            min as f64,
-            max as f64,
-            1.0,
-            move |cx: &App| get.read(cx).pref_i64(key, default) as f64,
-            move |value, cx: &mut App| {
-                set.update(cx, |store, cx| {
-                    store.set_pref_i64(key, value.round() as i64, cx);
-                });
-            },
-        )
-    }
-
-    pub(crate) fn pref_dropdown(
-        &self,
-        key: &'static str,
-        default: &'static str,
-        options: Vec<(SharedString, SharedString)>,
-    ) -> Control {
-        let get = self.store();
-        let set = self.store();
-        Control::dropdown(
-            options,
             move |cx: &App| SharedString::from(get.read(cx).pref_str(key, default)),
             move |value: SharedString, cx: &mut App| {
                 set.update(cx, |store, cx| {

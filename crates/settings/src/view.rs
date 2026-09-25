@@ -19,10 +19,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::sections::{
-    self, SectionContext, about, api, appearance, bt, doctor, download, ed2k, general, notify,
-    proxy,
-};
+use crate::sections::{self, SectionContext, api, appearance, bt, download, ed2k, general, proxy};
 use crate::store::{SettingsErrorKind, SettingsStore};
 use crate::ui::SettingsPage;
 
@@ -107,21 +104,12 @@ impl SettingsView {
         };
         vec![
             general::page(&ctx, cx),
-            sections::slot_page(
-                &ctx,
-                "account",
-                "settingsCatAccount",
-                "settingsCatAccountDesc",
-                IconName::User,
-                self.slots.account.clone(),
-            ),
             appearance::page(&ctx, cx),
             download::page(&ctx, cx),
             bt::page(&ctx, cx),
             ed2k::page(&ctx, cx),
             proxy::page(&ctx, cx),
             api::page(&ctx, cx),
-            notify::page(&ctx, cx),
             sections::slot_page(
                 &ctx,
                 "extensions",
@@ -130,8 +118,6 @@ impl SettingsView {
                 IconName::Settings2,
                 self.slots.extensions.clone(),
             ),
-            doctor::page(&ctx, cx),
-            about::page(&ctx, cx),
         ]
     }
 

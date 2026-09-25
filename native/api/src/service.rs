@@ -292,6 +292,7 @@ pub trait ApiHost: Send + Sync {
             source_url: String::new(),
             error: String::new(),
             items: Vec::new(),
+            variants: Vec::new(),
         })
     }
 

@@ -680,6 +680,7 @@ async fn handle_cmd(cmd: ActorCmd, engine: &mut Engine) {
                 let outcome = rx.await.unwrap_or(ResolvePreviewOutcome {
                     name: String::new(),
                     items: Vec::new(),
+                    variants: Vec::new(),
                     error: "resolve preview worker dropped".to_string(),
                 });
                 let _ = ack.send(outcome);

@@ -1,4 +1,4 @@
-//! 通用：启动与托盘、系统集成、侧边栏与活动栏可见性、自定义分类。
+//! 通用：启动与托盘、系统集成、通知、侧边栏与活动栏可见性、自定义分类。
 
 use gpui::App;
 use gpui_component::IconName;
@@ -21,10 +21,21 @@ pub(crate) fn page(ctx: &SectionContext, cx: &mut App) -> SettingsPage {
     .sections([
         startup_section(ctx, cx),
         system_section(ctx, cx),
+        notification_section(ctx),
         sidebar_section(ctx),
         activity_bar_section(ctx),
         categories::group(ctx, cx),
     ])
+}
+
+fn notification_section(ctx: &SectionContext) -> SettingsSection {
+    SettingsSection::new()
+        .title(ctx.t("notifyGroupSystem"))
+        .row(ctx.item(
+            "notifyOnComplete",
+            Some("notifyOnCompleteDesc"),
+            ctx.pref_switch("download.notify_on_complete", true),
+        ))
 }
 
 fn startup_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {

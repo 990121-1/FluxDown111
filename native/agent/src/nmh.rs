@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use fluxdown_protocol::{DownloadRequest, TaskDto};
+use fluxdown_protocol::{DownloadRequest, ResolvePreviewRequest, ResolvePreviewResponse, TaskDto};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -63,6 +63,8 @@ struct PipeResponse {
     msg_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     tasks: Option<Vec<TaskBrief>>,
+    #[serde(rename = "resolvePreview", skip_serializing_if = "Option::is_none")]
+    resolve_preview: Option<ResolvePreviewResponse>,
 }
 
 impl PipeResponse {
@@ -72,6 +74,7 @@ impl PipeResponse {
             message: Some(message.into()),
             msg_id,
             tasks: None,
+            resolve_preview: None,
         }
     }
 
@@ -81,6 +84,7 @@ impl PipeResponse {
             message: Some(message.into()),
             msg_id,
             tasks: None,
+            resolve_preview: None,
         }
     }
 
@@ -90,6 +94,17 @@ impl PipeResponse {
             message: None,
             msg_id,
             tasks: Some(tasks),
+            resolve_preview: None,
+        }
+    }
+
+    fn resolve_preview(msg_id: u64, preview: ResolvePreviewResponse) -> Self {
+        Self {
+            success: true,
+            message: None,
+            msg_id,
+            tasks: None,
+            resolve_preview: Some(preview),
         }
     }
 }
@@ -125,6 +140,7 @@ impl NmhService {
                 Err(error) => PipeResponse::error(message.msg_id, error.to_string()),
             },
             "batch_download" => self.batch_download(message.msg_id, message.payload).await,
+            "resolve_preview" => self.resolve_preview(message.msg_id, message.payload).await,
             "tasks" => self.task_list(message.msg_id).await,
             "task_op" => self.task_operation(message.msg_id, message.payload).await,
             "open_file" => {
@@ -159,6 +175,25 @@ impl NmhService {
             }
         }
         PipeResponse::ok(msg_id, format!("batch accepted ({count} items)"))
+    }
+
+    async fn resolve_preview(&self, msg_id: u64, payload: Value) -> PipeResponse {
+        let request = match serde_json::from_value::<ResolvePreviewRequest>(payload) {
+            Ok(request) if !request.url.trim().is_empty() => request,
+            Ok(_) => return PipeResponse::error(msg_id, "missing preview url"),
+            Err(error) => return PipeResponse::error(msg_id, error.to_string()),
+        };
+        match self
+            .daemon
+            .call::<ResolvePreviewRequest, ResolvePreviewResponse>(
+                fluxdown_protocol::method::DAEMON_GROUP_RESOLVE_PREVIEW,
+                Some(request),
+            )
+            .await
+        {
+            Ok(preview) => PipeResponse::resolve_preview(msg_id, preview),
+            Err(error) => PipeResponse::error(msg_id, format!("{:?}", error.code)),
+        }
     }
 
     async fn task_list(&self, msg_id: u64) -> PipeResponse {

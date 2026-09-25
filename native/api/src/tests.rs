@@ -346,6 +346,7 @@ impl ApiHost for MockHost {
                 source_url: String::new(),
                 error: String::new(),
                 items: Vec::new(),
+                variants: Vec::new(),
             }))
     }
 
@@ -1795,6 +1796,7 @@ async fn resolve_preview_forwards_request_and_returns_host_response() {
         source_url: "https://example.com/share".to_string(),
         error: String::new(),
         items: vec![],
+        variants: vec![],
     });
     let server = TestServer::start(host, |c| {
         c.token.set("T");

@@ -40,6 +40,7 @@ import {
 import type { MessageKey } from '@/utils/locales/zh-CN';
 import { initI18n, setLocale, t } from '@/utils/i18n';
 import { loadSettings } from '@/utils/settings';
+import type { ResolvedPreviewVariant } from '@/utils/native-messaging';
 import './style.css';
 
 /* ===== 常量 ===== */
@@ -103,7 +104,17 @@ export default defineContentScript({
     let resources: DetectedResource[] = [];
     let resourceVersion = 0;
     let manifestVersion = 0;
-    let candidateCache: { resourceVersion: number; manifestVersion: number; candidates: MediaCandidate[] } | null = null;
+    let resolverVersion = 0;
+    let resolverPreviewHref = '';
+    let resolverPreviewName = '';
+    let resolverPreviewVariants: ResolvedPreviewVariant[] = [];
+    let resolverPreviewTimer: number | null = null;
+    let candidateCache: {
+      resourceVersion: number;
+      manifestVersion: number;
+      resolverVersion: number;
+      candidates: MediaCandidate[];
+    } | null = null;
     let activeTab: string = 'all';
     const selectedIds = new Set<string>();
     interface ContentResourceRow {
@@ -161,6 +172,77 @@ export default defineContentScript({
     let dashManifests: DashManifestEntry[] = [];
     /** shadow 内根容器，主题以 data-theme 属性挂在其上，供 CSS light/dark 变量切换。 */
     let rootContainer: HTMLElement | null = null;
+
+    function resolverPageUrl(rawHref = location.href): string {
+      try {
+        const url = new URL(rawHref);
+        const host = url.hostname.toLowerCase();
+        if ((host === 'www.youtube.com' || host === 'youtube.com' || host === 'm.youtube.com') && url.pathname === '/watch') {
+          const videoId = url.searchParams.get('v');
+          if (videoId) return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+        }
+        if ((host === 'www.youtube.com' || host === 'youtube.com' || host === 'm.youtube.com') && url.pathname.startsWith('/shorts/')) {
+          const videoId = url.pathname.split('/').filter(Boolean)[1];
+          if (videoId) return `https://www.youtube.com/shorts/${encodeURIComponent(videoId)}`;
+        }
+        if (host === 'youtu.be') {
+          const videoId = url.pathname.split('/').filter(Boolean)[0];
+          if (videoId) return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+        }
+        url.hash = '';
+        return url.toString();
+      } catch {
+        return rawHref;
+      }
+    }
+
+    async function refreshResolverPreview(force = false): Promise<void> {
+      const href = resolverPageUrl();
+      if (!/^https?:\/\//i.test(href)) return;
+      if (!force && resolverPreviewHref === href) return;
+
+      resolverPreviewHref = href;
+      resolverPreviewName = '';
+      resolverPreviewVariants = [];
+      resolverVersion += 1;
+      candidateCache = null;
+      render();
+
+      try {
+        const response = await browser.runtime.sendMessage({
+          action: 'resolvePageVariants',
+          url: href,
+        });
+        // SPA 导航期间旧请求回来时不可污染新视频；YouTube 的 playlist/radio
+        // 查询参数会频繁变化，因此按 canonical video URL 而非完整 location.href 比较。
+        if (resolverPageUrl() !== href || resolverPreviewHref !== href) return;
+        const preview = response?.resolvePreview;
+        resolverPreviewName = typeof preview?.name === 'string' ? preview.name : '';
+        resolverPreviewVariants = Array.isArray(preview?.variants)
+          ? preview.variants.filter((variant: ResolvedPreviewVariant) => !!variant?.url)
+          : [];
+      } catch {
+        resolverPreviewName = '';
+        resolverPreviewVariants = [];
+      } finally {
+        if (resolverPageUrl() === href && resolverPreviewHref === href) {
+          resolverVersion += 1;
+          candidateCache = null;
+          render();
+        }
+      }
+    }
+
+    function scheduleResolverPreview(force = false, delay = 250): void {
+      if (!sniffEnabled || !/^https?:\/\//i.test(location.href)) return;
+      if (resolverPreviewTimer != null) {
+        window.clearTimeout(resolverPreviewTimer);
+      }
+      resolverPreviewTimer = window.setTimeout(() => {
+        resolverPreviewTimer = null;
+        void refreshResolverPreview(force);
+      }, delay);
+    }
 
     function resourceDebugFilename(): string {
       const stamp = new Date().toISOString().replace(/[.:]/g, '-');
@@ -319,6 +401,7 @@ export default defineContentScript({
         }
         render();
         syncPanelPageState();
+        scheduleResolverPreview(false, 50);
       } catch { /* */ }
     }
 
@@ -377,20 +460,40 @@ export default defineContentScript({
     }
 
     function refreshPlaybackPriority(): void {
+      syncPanelPageState();
       const next = currentPlaybackSignature();
       if (next === playbackSignature) return;
       playbackSignature = next;
       showSecondaryMedia = false;
       if (panelOpen) renderList();
+      if (next) scheduleResolverPreview(false, 150);
     }
 
     const playbackEvents = ['play', 'playing', 'pause', 'ended', 'loadedmetadata', 'emptied'] as const;
     for (const eventName of playbackEvents) {
       document.addEventListener(eventName, refreshPlaybackPriority, true);
     }
+
+    // IDM-style warmup: as soon as a media element appears on a dynamic page,
+    // resolve the page in the background so opening the floating panel is instant.
+    const mediaObserver = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of Array.from(record.addedNodes)) {
+          if (!(node instanceof Element)) continue;
+          if (node.matches('video,audio') || node.querySelector('video,audio')) {
+            scheduleResolverPreview(false, 200);
+            return;
+          }
+        }
+      }
+    });
+    mediaObserver.observe(document.documentElement, { childList: true, subtree: true });
+
     const playbackMonitor = window.setInterval(refreshPlaybackPriority, 1200);
     ctx.onInvalidated(() => {
       window.clearInterval(playbackMonitor);
+      if (resolverPreviewTimer != null) window.clearTimeout(resolverPreviewTimer);
+      mediaObserver.disconnect();
       for (const eventName of playbackEvents) {
         document.removeEventListener(eventName, refreshPlaybackPriority, true);
       }
@@ -744,6 +847,12 @@ export default defineContentScript({
       if (autoPanelPageHref === location.href) return;
       autoPanelPageHref = location.href;
       showSecondaryMedia = false;
+      resolverPreviewHref = '';
+      resolverPreviewName = '';
+      resolverPreviewVariants = [];
+      resolverVersion += 1;
+      candidateCache = null;
+      scheduleResolverPreview(true, 100);
     }
 
     function openPanel(): void {
@@ -755,6 +864,7 @@ export default defineContentScript({
       panelEl.classList.add('visible');
       dotEl.classList.add('active');
       render();
+      scheduleResolverPreview(false, 0);
     }
 
     function closePanel(): void {
@@ -1066,9 +1176,25 @@ export default defineContentScript({
 
       const mediaRows = rows.filter(mediaRow);
       const primary = primaryMediaRow(mediaRows);
-      const secondaryMedia = primary ? mediaRows.filter((row) => row.id !== primary.id) : mediaRows;
+      // IDM 式呈现：如果当前主资源是一个已解析出的媒体候选（DASH / HLS /
+      // direct），同一候选的所有 variant 都属于“这支影片的可选画质”，必须
+      // 直接展开，不能把 720p / 480p 等兄弟画质折进「其他预载资源」。
+      // 真正属于其他候选（广告、下一支影片预载、另一个播放器）的资源才折叠。
+      const primaryGroup = primary
+        ? isContentMediaCandidate(primary.item)
+          ? mediaRows.filter(
+            (row) => isContentMediaCandidate(row.item) && row.item.id === primary.item.id,
+          )
+          : [primary]
+        : [];
+      const primaryGroupIds = new Set(primaryGroup.map((row) => row.id));
+      const secondaryMedia = primary
+        ? mediaRows.filter((row) => !primaryGroupIds.has(row.id))
+        : mediaRows;
 
-      if (primary) appendMediaRow(primary, true);
+      // 保留候选原有的清晰度顺序（buildMediaCandidates 已按质量排序），只在
+      // 当前实际播放的那一档加「正在播放」标记；其它档同样直接可勾选/下载。
+      for (const row of primaryGroup) appendMediaRow(row, row.id === primary?.id);
 
       if (secondaryMedia.length > 0) {
         const toggle = h('div', 'secondary-media-toggle');
@@ -1173,6 +1299,7 @@ export default defineContentScript({
         filename: candidateFilename(candidate, variant),
         fileSize: variant.fileSize,
         mimeType: variant.mimeType,
+        headers: variant.headers,
       }).then((response: { success?: boolean } | undefined) => {
         if (!response?.success && button) button.disabled = false;
       }).catch(() => {
@@ -1196,6 +1323,8 @@ export default defineContentScript({
       const warning = candidate.downloadable
         ? ''
         : `<span class="candidate-warning">${esc(t('panel.videoNeedsManifest'))}</span>`;
+      const isResolvedVariant = candidate.id.startsWith('resolver:');
+      const sizeLabel = variant?.fileSize ? formatFileSize(variant.fileSize) : '';
 
       row.innerHTML = `
         <input type="checkbox" class="check" ${candidate.downloadable && variant ? '' : 'disabled'} ${selectedIds.has(rowId) ? 'checked' : ''}>
@@ -1204,9 +1333,10 @@ export default defineContentScript({
           <div class="meta candidate-meta">
             ${primary ? `<span class="now-playing-tag">${esc(t('panel.currentlyPlaying'))}</span>` : ''}
             ${quality}
+            ${sizeLabel ? `<span class="size">${esc(sizeLabel)}</span>` : ''}
             ${warning}
           </div>
-          ${variant?.videoUrl
+          ${variant?.videoUrl && !isResolvedVariant
             ? `<div class="source-url" title="${esc(variant.videoUrl)}">${esc(variant.videoUrl)}</div>`
             : ''}
         </div>
@@ -1348,11 +1478,12 @@ export default defineContentScript({
       if (
         candidateCache &&
         candidateCache.resourceVersion === resourceVersion &&
-        candidateCache.manifestVersion === manifestVersion
+        candidateCache.manifestVersion === manifestVersion &&
+        candidateCache.resolverVersion === resolverVersion
       ) {
         return candidateCache.candidates;
       }
-      const candidates = buildMediaCandidates(
+      let candidates = buildMediaCandidates(
         resources.filter((resource) => !isResolverPageResource(resource)),
         {
         pageTitle: document.title,
@@ -1362,7 +1493,41 @@ export default defineContentScript({
         manifests: dashManifests,
         },
       );
-      candidateCache = { resourceVersion, manifestVersion, candidates };
+
+      // IDM 式主路径：桌面 resolver/yt-dlp 一旦给出最终格式清单，就以这份
+      // 权威清单取代浏览器嗅探出来的零碎媒体请求。这样 YouTube 会直接显示
+      // 1080p/720p/480p...，而不是 f.txt / feed / googlevideo 分片噪声。
+      if (resolverPreviewHref === resolverPageUrl() && resolverPreviewVariants.length > 0) {
+        const orderedVariants = [...resolverPreviewVariants].sort((a, b) => {
+          const byHeight = (b.height || 0) - (a.height || 0);
+          if (byHeight !== 0) return byHeight;
+          return (b.bandwidth || 0) - (a.bandwidth || 0);
+        });
+        const resolverCandidate: MediaCandidate = {
+          id: `resolver:${location.href}`,
+          title: resolverPreviewName || document.title || t('panel.videoCandidate'),
+          type: 'video',
+          source: 'direct',
+          pageUrl: location.href,
+          variants: orderedVariants.map((variant, index) => ({
+            id: `resolver:${index}:${variant.label || 'variant'}`,
+            label: variant.label || t('panel.qualityUnknown'),
+            videoUrl: variant.url,
+            audioUrl: variant.audioUrl || undefined,
+            mimeType: variant.container ? `video/${variant.container}` : undefined,
+            bandwidth: variant.bandwidth || undefined,
+            fileSize: variant.size && variant.size > 0 ? variant.size : undefined,
+            fileName: variant.fileName || undefined,
+            headers: variant.headers,
+          })),
+          rawResourceIds: [],
+          fragmentCount: 0,
+          downloadable: true,
+        };
+        candidates = [resolverCandidate];
+      }
+
+      candidateCache = { resourceVersion, manifestVersion, resolverVersion, candidates };
       return candidates;
     }
 
@@ -1390,6 +1555,15 @@ export default defineContentScript({
 
     function displayItemsForTab(tab: string): Array<DetectedResource | MediaCandidate> {
       const resolverPages = resolverPageResourcesForTab(tab);
+      const hasResolvedVariants =
+        resolverPreviewHref === resolverPageUrl() && resolverPreviewVariants.length > 0;
+      if (hasResolvedVariants && (tab === 'all' || tab === 'video')) {
+        // IDM-style default view: once the native resolver has a real format list,
+        // the main panel is a clean quality picker. Raw page endpoints such as
+        // f.txt / feed / playlists stay available in their explicit type tabs
+        // instead of polluting the primary video list.
+        return [...resolverPages, ...mediaCandidatesForTab(tab)];
+      }
       // Resolver page 保留为当前完整视频/批量入口；底层播放流量不再完全丢弃，
       // 而是在 renderList 中作为“其他预载资源”折叠显示，便于高级用户检查。
       return [...resolverPages, ...mediaCandidatesForTab(tab), ...rawResourcesForTab(tab)];
@@ -1428,6 +1602,7 @@ export default defineContentScript({
             filename: candidateFilename(row.item, row.variant),
             fileSize: row.variant.fileSize,
             mimeType: row.variant.mimeType,
+            headers: row.variant.headers,
           });
         } else {
           items.push({

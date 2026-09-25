@@ -38,6 +38,10 @@ export interface MediaCandidateVariant {
   frameRate?: number;
   fileSize?: number;
   resourceId?: string;
+  /** Resolver supplied final filename (already includes extension). */
+  fileName?: string;
+  /** Resolver supplied request headers required by the signed media URL. */
+  headers?: Record<string, string>;
 }
 
 export interface MediaCandidate {
@@ -701,6 +705,9 @@ export function candidateFilename(
   candidate: MediaCandidate,
   variant: MediaCandidateVariant,
 ): string {
+  if (variant.fileName?.trim()) {
+    return safeFilenamePart(variant.fileName);
+  }
   const base = safeFilenamePart(candidate.title);
   const name = candidate.variants.length > 1
     ? `${base} ${safeFilenamePart(variant.label)}`
