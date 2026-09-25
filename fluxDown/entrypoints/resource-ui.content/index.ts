@@ -14,7 +14,7 @@ import { browser } from 'wxt/browser';
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { createShadowRootUi } from 'wxt/utils/content-script-ui/shadow-root';
 import type { DetectedResource, ResourceType, ConfidenceLevel, TrackPairGroup } from '@/utils/resource-types';
-import { formatFileSize, groupTrackPairs } from '@/utils/resource-types';
+import { formatFileSize, groupTrackPairs, normalizeUrlForDedup } from '@/utils/resource-types';
 import type { DashManifest } from '@/utils/dash-manifest';
 import { detectTrackKind } from '@/utils/track-detector';
 import type { DashManifestEntry, MediaCandidate, MediaCandidateVariant } from '@/utils/media-candidates';
@@ -126,6 +126,11 @@ export default defineContentScript({
     const dismissedIds = new Set<string>();
     let panelOpen = false;
     let side: 'left' | 'right' = 'right';
+    let showFloatingButtonSetting = true;
+    let showResourcePanelSetting = true;
+    let autoPanelPageHref = location.href;
+    let showSecondaryMedia = false;
+    let playbackSignature = '';
 
     /* ========== DOM 引用 ========== */
     let dotEl: HTMLElement;
@@ -209,7 +214,10 @@ export default defineContentScript({
      * 开关改动即时生效（挂载 / 卸载 shadow root），不需要刷新页面。 */
     let sniffEnabled = true;
     try {
-      sniffEnabled = (await loadSettings()).resourceSniffing !== false;
+      const settings = await loadSettings();
+      sniffEnabled = settings.resourceSniffing !== false;
+      showFloatingButtonSetting = settings.showFloatingButton !== false;
+      showResourcePanelSetting = settings.showResourcePanel !== false;
     } catch {
       // 设置读取失败按开启处理
     }
@@ -218,9 +226,17 @@ export default defineContentScript({
     browser.storage.onChanged.addListener((changes, area) => {
       if (area !== 'sync' || !changes.settings) return;
       const next = changes.settings.newValue as
-        | { resourceSniffing?: boolean }
+        | {
+            resourceSniffing?: boolean;
+            showFloatingButton?: boolean;
+            showResourcePanel?: boolean;
+          }
         | undefined;
       const enabled = next?.resourceSniffing !== false;
+      showFloatingButtonSetting = next?.showFloatingButton !== false;
+      showResourcePanelSetting = next?.showResourcePanel !== false;
+      if (!showFloatingButtonSetting) hideFloat();
+      if (!showResourcePanelSetting && panelOpen) closePanel();
       if (enabled === sniffEnabled) return;
       sniffEnabled = enabled;
       if (enabled) {
@@ -240,6 +256,7 @@ export default defineContentScript({
         resourceVersion += 1;
         candidateCache = null;
         render();
+        syncPanelPageState();
       }
       if (msg.action === 'toggleResourcePanel') {
         togglePanel();
@@ -254,6 +271,7 @@ export default defineContentScript({
         manifestVersion += 1;
         candidateCache = null;
         render();
+        syncPanelPageState();
       }
     });
 
@@ -294,6 +312,7 @@ export default defineContentScript({
           dashManifests = [{ url: '', manifest: dashManifest }];
         }
         render();
+        syncPanelPageState();
       } catch { /* */ }
     }
 
@@ -330,6 +349,46 @@ export default defineContentScript({
       if (!videoInPath(e)) return;
       floatTimer = setTimeout(hideFloat, 400);
     }, true);
+
+    /* ========== 当前播放器跟踪 ==========
+     * Reels / Shorts 会在同一 SPA 页面内替换/滚动多个 <video>，而 URL、blob src、
+     * 播放状态和可视位置可能分别变化。事件 + 轻量轮询双保险，只在主播放器身份改变
+     * 时重排资源，不随 currentTime 每秒重绘。 */
+    function currentPlaybackSignature(): string {
+      const video = activePlaybackVideo();
+      if (!video) return '';
+      const rect = video.getBoundingClientRect();
+      return [
+        video.currentSrc || video.src || '',
+        video.paused ? 'paused' : 'playing',
+        video.ended ? 'ended' : 'active',
+        video.readyState,
+        Math.round(rect.top / 80),
+        Math.round(rect.left / 80),
+        Math.round(rect.width / 80),
+        Math.round(rect.height / 80),
+      ].join('|');
+    }
+
+    function refreshPlaybackPriority(): void {
+      const next = currentPlaybackSignature();
+      if (next === playbackSignature) return;
+      playbackSignature = next;
+      showSecondaryMedia = false;
+      if (panelOpen) renderList();
+    }
+
+    const playbackEvents = ['play', 'playing', 'pause', 'ended', 'loadedmetadata', 'emptied'] as const;
+    for (const eventName of playbackEvents) {
+      document.addEventListener(eventName, refreshPlaybackPriority, true);
+    }
+    const playbackMonitor = window.setInterval(refreshPlaybackPriority, 1200);
+    ctx.onInvalidated(() => {
+      window.clearInterval(playbackMonitor);
+      for (const eventName of playbackEvents) {
+        document.removeEventListener(eventName, refreshPlaybackPriority, true);
+      }
+    });
 
     /* ================================================================
      *  构建 DOM
@@ -507,13 +566,13 @@ export default defineContentScript({
       hideBtn.innerHTML = svg(SVG_EYE_OFF);
       hideBtn.addEventListener('click', () => {
         browser.storage.local.set({ [DOT_VISIBLE_KEY]: false });
-        if (panelOpen) togglePanel();
+        if (panelOpen) closePanel();
       });
       headerActions.appendChild(hideBtn);
 
       const closeBtn = h('button', 'btn-close');
       closeBtn.innerHTML = svg(SVG_CLOSE);
-      closeBtn.addEventListener('click', () => { togglePanel(); });
+      closeBtn.addEventListener('click', () => { closePanel(); });
       headerActions.appendChild(closeBtn);
       header.appendChild(headerActions);
 
@@ -663,7 +722,7 @@ export default defineContentScript({
         }
         if (media.length > 0) {
           activeTab = media.some((r) => r.type === 'video') ? 'video' : 'all';
-          if (!panelOpen) togglePanel();
+          if (!panelOpen) openPanel();
           else render();
         }
         hideFloat();
@@ -675,19 +734,34 @@ export default defineContentScript({
      *  面板控制
      * ================================================================ */
 
+    function syncPanelPageState(): void {
+      if (autoPanelPageHref === location.href) return;
+      autoPanelPageHref = location.href;
+      showSecondaryMedia = false;
+    }
+
+    function openPanel(): void {
+      if (!sniffEnabled || !showResourcePanelSetting || panelOpen) return;
+      syncPanelPageState();
+      panelOpen = true;
+      const dotY = parseInt(dotEl.style.top) || Math.round(window.innerHeight * 0.4);
+      positionPanel(dotY);
+      panelEl.classList.add('visible');
+      dotEl.classList.add('active');
+      render();
+    }
+
+    function closePanel(): void {
+      if (!panelOpen) return;
+      panelOpen = false;
+      panelEl.classList.remove('visible');
+      dotEl.classList.remove('active');
+    }
+
     function togglePanel(): void {
-      if (!sniffEnabled) return;
-      panelOpen = !panelOpen;
-      if (panelOpen) {
-        const dotY = parseInt(dotEl.style.top) || Math.round(window.innerHeight * 0.4);
-        positionPanel(dotY);
-        panelEl.classList.add('visible');
-        dotEl.classList.add('active');
-        render();
-      } else {
-        panelEl.classList.remove('visible');
-        dotEl.classList.remove('active');
-      }
+      if (!sniffEnabled || !showResourcePanelSetting) return;
+      if (panelOpen) closePanel();
+      else openPanel();
     }
 
     function positionPanel(dotY: number): void {
@@ -816,6 +890,126 @@ export default defineContentScript({
 
     let showLowConf = false; // 低可信度资源是否展开
 
+    function visibleArea(video: HTMLVideoElement): number {
+      const rect = video.getBoundingClientRect();
+      const width = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+      const height = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+      if (width <= 0 || height <= 0) return 0;
+      const style = getComputedStyle(video);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return 0;
+      return width * height;
+    }
+
+    function activePlaybackVideo(): HTMLVideoElement | null {
+      let best: HTMLVideoElement | null = null;
+      let bestScore = -1;
+      for (const video of Array.from(document.querySelectorAll<HTMLVideoElement>('video'))) {
+        const area = visibleArea(video);
+        if (area <= 0) continue;
+        let score = area;
+        if (!video.paused && !video.ended) score += 1_000_000_000;
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) score += 10_000_000;
+        if (video.currentTime > 0) score += 1_000_000;
+        if (score > bestScore) {
+          best = video;
+          bestScore = score;
+        }
+      }
+      return best;
+    }
+
+    function normalizedMediaUrl(url: string | undefined): string {
+      if (!url || url.startsWith('blob:') || url.startsWith('data:')) return '';
+      return normalizeUrlForDedup(url);
+    }
+
+    function rowUrl(row: ContentResourceRow): string {
+      if (isContentMediaCandidate(row.item)) return row.variant?.videoUrl || '';
+      return row.item.url;
+    }
+
+    function rowLatestDetectedAt(row: ContentResourceRow): number {
+      if (!isContentMediaCandidate(row.item)) return row.item.detectedAt || 0;
+      const ids = new Set(row.item.rawResourceIds);
+      let latest = 0;
+      for (const resource of resources) {
+        if (ids.has(resource.id)) latest = Math.max(latest, resource.detectedAt || 0);
+      }
+      return latest;
+    }
+
+    function isProfileReelsResolver(resource: DetectedResource): boolean {
+      if (!isResolverPageResource(resource)) return false;
+      try {
+        const url = new URL(resource.url);
+        if (url.hostname.toLowerCase().replace(/^www\./, '') !== 'instagram.com') return false;
+        const parts = url.pathname.split('/').filter(Boolean);
+        return parts.length === 2 && parts[1] === 'reels';
+      } catch {
+        return false;
+      }
+    }
+
+    function isCurrentResolverRow(row: ContentResourceRow): boolean {
+      if (isContentMediaCandidate(row.item) || !isResolverPageResource(row.item)) return false;
+      try {
+        const current = new URL(location.href);
+        const source = new URL(row.item.url);
+        current.hash = '';
+        source.hash = '';
+        return current.origin === source.origin && current.pathname.replace(/\/+$/, '') === source.pathname.replace(/\/+$/, '');
+      } catch {
+        return row.item.url === location.href;
+      }
+    }
+
+    function mediaRow(row: ContentResourceRow): boolean {
+      if (isContentMediaCandidate(row.item)) return true;
+      return row.item.type === 'video' || row.item.type === 'stream' || isResolverPageResource(row.item);
+    }
+
+    function primaryMediaRow(rows: ContentResourceRow[]): ContentResourceRow | undefined {
+      if (rows.length === 0) return undefined;
+
+      // Resolver 页面是当前页面的权威“完整视频”入口，优先级高于页面预载的 CDN
+      // range/chunk。Instagram profile /reels/ 代表批量动作，也保留为主入口。
+      const resolver = rows.find(isCurrentResolverRow);
+      if (resolver) return resolver;
+
+      const active = activePlaybackVideo();
+      const activeUrl = normalizedMediaUrl(active?.currentSrc || active?.src);
+      if (activeUrl) {
+        const exact = rows.find((row) => normalizedMediaUrl(rowUrl(row)) === activeUrl);
+        if (exact) return exact;
+      }
+
+      // MSE/blob 无法直接把 <video> 与 CDN URL 一一对应；当前播放中的媒体会持续
+      // 产生请求，因此用该 tab 最近检测到的完整 candidate 作为通用 fallback。
+      if (active && !active.paused && !active.ended) {
+        return [...rows].sort((a, b) => rowLatestDetectedAt(b) - rowLatestDetectedAt(a))[0];
+      }
+
+      return rows[0];
+    }
+
+    function primaryRowLabel(row: ContentResourceRow): string {
+      if (!isContentMediaCandidate(row.item) && isProfileReelsResolver(row.item)) {
+        return t('panel.batchReels');
+      }
+      return t('panel.currentlyPlaying');
+    }
+
+    function appendMediaRow(row: ContentResourceRow, primary: boolean): void {
+      const el = isContentMediaCandidate(row.item)
+        ? buildMediaCandidateRow(row.item, row.variant, primary)
+        : buildResourceRow(row.item, primary);
+      if (primary) {
+        el.dataset.primaryMedia = 'true';
+        el.setAttribute('aria-label', primaryRowLabel(row));
+      }
+      listEl?.appendChild(el);
+    }
+
     function renderList(): void {
       if (!listEl) return;
       const rows = resourceRowsForTab(activeTab);
@@ -832,14 +1026,35 @@ export default defineContentScript({
 
       listEl.innerHTML = '';
 
-      for (const row of rows) {
-        if ('downloadable' in row.item) {
-          listEl.appendChild(buildMediaCandidateRow(row.item, row.variant));
+      const mediaRows = rows.filter(mediaRow);
+      const primary = primaryMediaRow(mediaRows);
+      const secondaryMedia = primary ? mediaRows.filter((row) => row.id !== primary.id) : mediaRows;
+
+      if (primary) appendMediaRow(primary, true);
+
+      if (secondaryMedia.length > 0) {
+        const toggle = h('div', 'secondary-media-toggle');
+        toggle.innerHTML = `
+          <span class="secondary-media-line"></span>
+          <button class="secondary-media-btn">
+            ${showSecondaryMedia
+              ? esc(t('panel.hidePreloaded'))
+              : esc(t('panel.otherPreloaded', { count: String(secondaryMedia.length) }))}
+          </button>
+          <span class="secondary-media-line"></span>
+        `;
+        toggle.querySelector<HTMLButtonElement>('.secondary-media-btn')?.addEventListener('click', () => {
+          showSecondaryMedia = !showSecondaryMedia;
+          renderList();
+        });
+        listEl.appendChild(toggle);
+        if (showSecondaryMedia) {
+          for (const row of secondaryMedia) appendMediaRow(row, false);
         }
       }
 
       const items = rows
-        .filter((row): row is ContentResourceRow & { item: DetectedResource } => !('downloadable' in row.item))
+        .filter((row): row is ContentResourceRow & { item: DetectedResource } => !mediaRow(row) && !('downloadable' in row.item))
         .map((row) => row.item);
 
       // 按可信度分组（资源已按 confidence desc 排序）
@@ -930,10 +1145,11 @@ export default defineContentScript({
     function buildMediaCandidateRow(
       candidate: MediaCandidate,
       variant?: MediaCandidateVariant,
+      primary = false,
     ): HTMLElement {
       const row = h(
         'div',
-        `resource-row media-candidate-row${candidate.downloadable ? '' : ' unresolved'}`,
+        `resource-row media-candidate-row${candidate.downloadable ? '' : ' unresolved'}${primary ? ' primary-media' : ''}`,
       );
       const rowId = contentResourceRowId(candidate, variant);
       const quality = variant
@@ -948,9 +1164,13 @@ export default defineContentScript({
         <div class="info">
           <div class="filename" title="${esc(candidate.pageUrl)}">${esc(candidate.title)}</div>
           <div class="meta candidate-meta">
+            ${primary ? `<span class="now-playing-tag">${esc(t('panel.currentlyPlaying'))}</span>` : ''}
             ${quality}
             ${warning}
           </div>
+          ${variant?.videoUrl
+            ? `<div class="source-url" title="${esc(variant.videoUrl)}">${esc(variant.videoUrl)}</div>`
+            : ''}
         </div>
         ${candidate.downloadable && variant
           ? `<button class="dl-btn" title="${t('panel.downloadCandidate')}">${esc(t('panel.download'))}</button>`
@@ -971,11 +1191,11 @@ export default defineContentScript({
       return row;
     }
 
-    function buildResourceRow(r: DetectedResource): HTMLElement {
+    function buildResourceRow(r: DetectedResource, primary = false): HTMLElement {
       const failed = previewFailedIds.has(r.id);
       const row = h(
         'div',
-        `resource-row conf-${r.confidence}${failed ? ' preview-failed' : ''}`,
+        `resource-row conf-${r.confidence}${failed ? ' preview-failed' : ''}${primary ? ' primary-media' : ''}`,
       );
       const sizeStr = r.size > 0 ? formatFileSize(r.size) : '';
       const quality = r.quality ? `<span class="quality-tag">${r.quality}</span>` : '';
@@ -988,12 +1208,14 @@ export default defineContentScript({
         <div class="info">
           <div class="filename" title="${esc(r.url)}">${esc(name)}</div>
           <div class="meta">
+            ${primary ? `<span class="now-playing-tag">${esc(isProfileReelsResolver(r) ? t('panel.batchReels') : t('panel.currentlyPlaying'))}</span>` : ''}
             ${trackTag}
             ${quality}
             ${sizeStr ? `<span class="size">${sizeStr}</span>` : ''}
             ${r.mimeType ? `<span>${esc(r.mimeType)}</span>` : ''}
             ${failed ? `<span class="preview-limited" title="${t('panel.previewLimitedHint')}">${t('panel.previewLimited')}</span>` : ''}
           </div>
+          <div class="source-url" title="${esc(r.url)}">${esc(r.url)}</div>
         </div>
         ${isPreviewable(r) ? `<button class="preview-btn" title="${t('panel.previewTitle')}">${esc(t('panel.previewTitle'))}</button>` : ''}
         <button class="dl-btn" title="${t('panel.download')}">${esc(t('panel.download'))}</button>
@@ -1064,6 +1286,16 @@ export default defineContentScript({
       return resource.type === 'video' || resource.type === 'stream';
     }
 
+    function isResolverPageResource(resource: DetectedResource): boolean {
+      return resource.mimeType === 'application/x-fluxdown-resolver-page';
+    }
+
+    function resolverPageResourcesForTab(tab: string): DetectedResource[] {
+      if (tab !== 'all' && tab !== 'video') return [];
+      return resources.filter((resource) =>
+        isResolverPageResource(resource) && !dismissedIds.has(resource.id));
+    }
+
     function mediaCandidatesForTab(tab: string): MediaCandidate[] {
       if (tab !== 'all' && tab !== 'video' && tab !== 'stream') return [];
       const candidates = mediaCandidatesSnapshot();
@@ -1082,13 +1314,16 @@ export default defineContentScript({
       ) {
         return candidateCache.candidates;
       }
-      const candidates = buildMediaCandidates(resources, {
+      const candidates = buildMediaCandidates(
+        resources.filter((resource) => !isResolverPageResource(resource)),
+        {
         pageTitle: document.title,
         pageUrl: location.href,
         fallbackTitle: t('panel.videoCandidate'),
         videoLabel: t('panel.videoIndex'),
         manifests: dashManifests,
-      });
+        },
+      );
       candidateCache = { resourceVersion, manifestVersion, candidates };
       return candidates;
     }
@@ -1116,7 +1351,10 @@ export default defineContentScript({
     }
 
     function displayItemsForTab(tab: string): Array<DetectedResource | MediaCandidate> {
-      return [...mediaCandidatesForTab(tab), ...rawResourcesForTab(tab)];
+      const resolverPages = resolverPageResourcesForTab(tab);
+      // Resolver page 保留为当前完整视频/批量入口；底层播放流量不再完全丢弃，
+      // 而是在 renderList 中作为“其他预载资源”折叠显示，便于高级用户检查。
+      return [...resolverPages, ...mediaCandidatesForTab(tab), ...rawResourcesForTab(tab)];
     }
 
     function resourceRowsForTab(tab: string): ContentResourceRow[] {
@@ -1178,7 +1416,7 @@ export default defineContentScript({
     }
 
     function showFloat(video: HTMLVideoElement): void {
-      if (!sniffEnabled || !floatBtnEl) return;
+      if (!sniffEnabled || !showFloatingButtonSetting || !floatBtnEl) return;
       const rect = video.getBoundingClientRect();
       if (rect.width < 120 || rect.height < 80) return;
 

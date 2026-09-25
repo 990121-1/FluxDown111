@@ -12,7 +12,8 @@ use crate::{
         ZoomWindow,
     },
     app::Desktop,
-    windows::{WindowKey, WindowRegistry, confirm_active_tasks},
+    service_bootstrap,
+    windows::{WindowKey, WindowRegistry},
 };
 
 const WEBSITE_URL: &str = "https://fluxdown.zerx.dev";
@@ -221,9 +222,10 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&Window) + 'static) {
     });
 }
 
-/// 退出：有活跃任务时先在当前窗口提示「下载将继续由后台服务执行」。
+/// 真正退出：关闭 Desktop 后，同时结束本机 agent / daemon / NMH。
 pub fn request_quit(cx: &mut App) {
     if Desktop::active_task_count(cx) == 0 {
+        service_bootstrap::terminate_background_stack();
         cx.quit();
         return;
     }
@@ -231,11 +233,16 @@ pub fn request_quit(cx: &mut App) {
         let Some(window) = WindowRegistry::focused_window(cx)
             .or_else(|| WindowRegistry::handle(cx, &WindowKey::Main))
         else {
+            service_bootstrap::terminate_background_stack();
             cx.quit();
             return;
         };
         let _ = window.update(cx, |_, window, cx| {
-            confirm_active_tasks(window, cx, |_, cx| cx.quit());
+            window.activate_window();
+            crate::windows::confirm_quit_active_tasks(window, cx, |_, cx| {
+                service_bootstrap::terminate_background_stack();
+                cx.quit();
+            });
         });
     });
 }

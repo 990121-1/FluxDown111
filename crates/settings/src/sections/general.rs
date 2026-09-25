@@ -40,14 +40,6 @@ fn startup_section(ctx: &SectionContext, cx: &mut App) -> SettingsSection {
         )
         .row(
             ctx.item(
-                "closeToTray",
-                Some(tray_desc("closeToTrayDesc")),
-                ctx.pref_switch("close_to_tray", true),
-            )
-            .disabled(!TRAY_SUPPORTED),
-        )
-        .row(
-            ctx.item(
                 "startMinimizedToTray",
                 Some(tray_desc("startMinimizedToTrayDesc")),
                 ctx.pref_switch("start_minimized_to_tray", false),

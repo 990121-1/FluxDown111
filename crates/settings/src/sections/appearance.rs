@@ -3,6 +3,7 @@
 //! 每个控件同时写入偏好（走 `agent.preferences.patch`）并立即通过主题 crate 生效；
 //! 偏好快照回流时 app 调用 `fluxdown_ui_theme::apply_appearance_preferences` 幂等对齐。
 
+use fluxdown_ui_i18n::system_locale;
 use fluxdown_ui_theme::{
     AccentScheme, AppearancePreferences, BuiltinThemeId, COLOR_SCHEME_KEY, CUSTOM_COLOR_KEY,
     DARK_THEME_KEY, LIGHT_THEME_KEY, THEME_MODE_KEY, ThemePreference, UI_SCALE_KEY,
@@ -493,14 +494,4 @@ fn ui_scale_field(ctx: &SectionContext) -> Control {
             });
         },
     )
-}
-
-fn system_locale() -> String {
-    std::env::var("LC_ALL")
-        .or_else(|_| std::env::var("LC_MESSAGES"))
-        .or_else(|_| std::env::var("LANG"))
-        .ok()
-        .and_then(|value| value.split('.').next().map(str::to_owned))
-        .filter(|value| !value.is_empty() && value != "C" && value != "POSIX")
-        .unwrap_or_else(|| "en".to_owned())
 }

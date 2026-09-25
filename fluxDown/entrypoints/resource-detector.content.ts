@@ -78,6 +78,7 @@ export default defineContentScript({
       }).catch(() => {
         // 扩展可能已失效
       });
+      reportResolverPageResource();
     }
 
     const handlePageUrlChange = (): void => reportPageUrlChange();
@@ -85,6 +86,56 @@ export default defineContentScript({
     ctx.onInvalidated(() => {
       document.removeEventListener("fluxdown-page-url-changed", handlePageUrlChange);
     });
+
+    /**
+     * 对 yt-dlp resolver 已明确支持的平台，把「当前视频页」本身作为一个可下载候选。
+     *
+     * 这些平台（尤其 YouTube 2026 的 UMP 传输）底层网络流量不一定存在一个可独立
+     * 下载的 MP4/HLS URL。与其把碎片/UMP 错当直链，不如把页面 URL 交回 FluxDown
+     * 的 resolver：YouTube / Facebook Reel / Instagram Reel 会解析为单任务，
+     * Instagram /<username>/reels/ 会解析为 manifest 并裂变成多个任务。
+     */
+    function resolverPagePayload(): ResourceMessagePayload | null {
+      let parsed: URL;
+      try {
+        parsed = new URL(location.href);
+      } catch {
+        return null;
+      }
+      const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      const path = parsed.pathname.replace(/\/+$/, "") || "/";
+      const parts = path.split("/").filter(Boolean);
+
+      let supported = false;
+      if (host === "youtube.com" || host === "youtu.be") {
+        supported = host === "youtu.be"
+          ? parts.length >= 1
+          : path === "/watch" || parts[0] === "shorts" || parts[0] === "live";
+      } else if (host === "facebook.com" || host.endsWith(".facebook.com") || host === "fb.watch") {
+        supported = host === "fb.watch" || parts[0] === "reel" || (parts[0] === "share" && parts[1] === "r");
+      } else if (host === "instagram.com") {
+        const singleReel = parts[0] === "reel" || parts[0] === "reels";
+        const profileReels = parts.length === 2 && parts[1] === "reels";
+        supported = singleReel || profileReels;
+      }
+      if (!supported) return null;
+
+      const cleanTitle = (document.title || "Video").replace(/\s+/g, " ").trim().slice(0, 160);
+      return {
+        url: location.href,
+        type: "video",
+        filename: cleanTitle || "Video",
+        mimeType: "application/x-fluxdown-resolver-page",
+        detectedBy: "dom-scan",
+        pageUrl: location.href,
+      };
+    }
+
+    function reportResolverPageResource(): void {
+      if (!sniffingEnabled) return;
+      const payload = resolverPagePayload();
+      if (payload) reportResources([payload]);
+    }
 
     /**
      * 补扫页面已经存在的内嵌 JSON 状态。
@@ -137,6 +188,7 @@ export default defineContentScript({
       if (initialResources.length > 0) {
         reportResources(initialResources);
       }
+      reportResolverPageResource();
     }
 
     // ===== 2. MutationObserver 持续监听（合批 + 空闲期处理，#288） =====

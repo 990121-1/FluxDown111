@@ -21,6 +21,23 @@ pub async fn run(
     cancel: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let paths = AgentPaths::resolve()?;
+
+    // 浏览器扩展是桌面下载链路的一部分。便携版首次解压、升级后中继路径变化、
+    // 或用户清理 data dir 时，Native Messaging 清单/注册表都可能缺失。这里仅在
+    // diagnose 判定需要更新时做一次幂等注册；失败只降级为日志，不能阻止 agent
+    // 和普通下载功能启动。Doctor 中的“重新注册”仍保留作为手动修复入口。
+    if crate::nmh::registry::needs_update() {
+        match tokio::task::spawn_blocking(crate::nmh::registry::register).await {
+            Ok(Ok(())) => tracing::info!("Native Messaging host registration refreshed"),
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "Native Messaging host auto-registration failed")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Native Messaging registration worker failed")
+            }
+        }
+    }
+
     let store = match StateStore::open(paths.agent_data_dir.clone()).await {
         Ok(store) => Arc::new(store),
         Err(StateError::Locked) => {

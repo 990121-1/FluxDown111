@@ -113,8 +113,12 @@ impl NmhService {
     async fn dispatch(&self, message: PipeMessage) -> PipeResponse {
         match message.action.as_str() {
             "ping" => PipeResponse::ok(message.msg_id, "pong"),
+            // Browser-extension downloads are already an explicit user action: the user clicked
+            // Download in the FluxDown resource panel/floating control. Requiring a second
+            // desktop confirmation defeats the IDM-style one-click workflow and can also strand
+            // captures when the desktop UI is not foregrounded. Submit these directly to daemon.
             "download" => match serde_json::from_value::<DownloadRequest>(message.payload) {
-                Ok(request) => match self.capture.submit(request, false).await {
+                Ok(request) => match self.capture.submit(request, true).await {
                     Ok(_) => PipeResponse::ok(message.msg_id, "download accepted"),
                     Err(error) => PipeResponse::error(message.msg_id, error.to_string()),
                 },
@@ -148,7 +152,9 @@ impl NmhService {
         };
         let count = batch.items.len();
         for request in batch.items {
-            if let Err(error) = self.capture.submit(request, false).await {
+            // batch_download is likewise emitted only after the user explicitly clicks the
+            // extension's batch action; treat that click as confirmation for every selected row.
+            if let Err(error) = self.capture.submit(request, true).await {
                 return PipeResponse::error(msg_id, error.to_string());
             }
         }
@@ -449,6 +455,10 @@ pub mod registry {
     const NMH_EXE_NAME: &str = "fluxdown_nmh";
     /// Chrome 扩展 ID（wxt.config.ts 里通过 `key` 固定）。
     const CHROME_EXTENSION_ID: &str = "chrome-extension://meleenglfggcmcajknpeeeiobnpfmahc/";
+    /// 自托管 CRX 固定 ID。CRX 使用本机保留的独立签名私钥生成；与 Web Store /
+    /// 开发版 ID 并存，避免自行安装 CRX 时 Native Messaging 被 Chromium 拒绝。
+    const CHROME_SELFHOST_CRX_EXTENSION_ID: &str =
+        "chrome-extension://gjkanjjijhbekfafbipkoaonhmphfghj/";
     /// Edge 商店扩展 ID：Edge 忽略清单 `key`，必须单独放行，否则 connectNative 报 forbidden。
     const EDGE_EXTENSION_ID: &str = "chrome-extension://nglkkjbogjghekbhhcnccnpfedjbdhhd/";
     const FIREFOX_EXTENSION_ID: &str = "fluxdown@fluxdown.app";
@@ -511,7 +521,11 @@ pub mod registry {
             description: NMH_DESCRIPTION.to_owned(),
             path: path.to_owned(),
             host_type: "stdio".to_owned(),
-            allowed_origins: vec![CHROME_EXTENSION_ID.to_owned(), EDGE_EXTENSION_ID.to_owned()],
+            allowed_origins: vec![
+                CHROME_EXTENSION_ID.to_owned(),
+                CHROME_SELFHOST_CRX_EXTENSION_ID.to_owned(),
+                EDGE_EXTENSION_ID.to_owned(),
+            ],
         })
         .map_err(io::Error::other)
     }

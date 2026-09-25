@@ -1230,6 +1230,7 @@
   "menuCycleSort": "切换排序",
   "closeWithActiveTasksTitle": "仍有下载在进行",
   "closeWithActiveTasksHint": "关闭窗口后，下载将继续由后台服务执行。",
+  "quitWithActiveTasksHint": "退出 FluxDown 将关闭后台服务，并停止所有正在进行的下载。",
   "protocolVersionLabel": "协议版本",
   "updateAvailableToast": "新版本 v{v} 可用。",
   "goToDownload": "前往下载",

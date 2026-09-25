@@ -11,7 +11,7 @@ use std::{
 
 use fluxdown_protocol::{AgentEvent, DaemonEvent, DaemonRuntimeStatsDto, ServiceEvent};
 use fluxdown_ui_downloads::DownloadView;
-use fluxdown_ui_i18n::{I18nCatalog, I18nError, Translator};
+use fluxdown_ui_i18n::{I18nCatalog, I18nError, Translator, system_locale};
 use fluxdown_ui_settings::{SettingsStore, component_locale};
 use fluxdown_ui_shell::{RouteId, ShellView};
 use gpui::{App, AppContext as _, Entity, Global, WeakEntity};
@@ -492,17 +492,6 @@ fn agent_token_path() -> std::path::PathBuf {
     directories::ProjectDirs::from("dev", "zerx", "FluxDown")
         .map(|project| project.data_dir().join("agent").join("agent.token"))
         .unwrap_or_else(|| std::path::PathBuf::from("agent.token"))
-}
-
-pub(crate) fn system_locale() -> String {
-    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Ok(locale) = env::var(key)
-            && !locale.trim().is_empty()
-        {
-            return locale;
-        }
-    }
-    "en".to_owned()
 }
 
 #[cfg(test)]

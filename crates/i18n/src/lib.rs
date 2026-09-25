@@ -4,7 +4,7 @@
 //! 查找语义与 Flutter `I18nStore` 一致：locale 精确匹配、主语言匹配、英文
 //! 键级回退、空值回退以及 `{name}` 占位插值。
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, env, sync::Arc};
 
 use thiserror::Error;
 
@@ -130,7 +130,7 @@ impl I18nCatalog {
         Ok(Self { tables, available })
     }
 
-    /// 可用 locale，顺序与 Flutter 一致：`en`、`zh`，随后按代码排序。
+    /// 可用 locale。中文优先展示台湾繁中、简中，再展示英文；其他语言按代码排序。
     pub fn available_locales(&self) -> &[String] {
         &self.available
     }
@@ -139,6 +139,26 @@ impl I18nCatalog {
     pub fn resolve_locale<'catalog>(&'catalog self, locale: &str) -> &'catalog str {
         let normalized = normalize_locale(locale);
         if let Some((code, _)) = self.tables.get_key_value(&normalized) {
+            return code;
+        }
+
+        // `zh-Hant-*` / 台湾、香港、澳门系统语言应优先落到繁体中文（台湾），
+        // 不能先被通用 `zh` 前缀吸到简体中文。
+        let traditional_chinese = normalized == "zh-hant"
+            || normalized.starts_with("zh-hant-")
+            || normalized
+                .split('-')
+                .any(|part| matches!(part, "tw" | "hk" | "mo"));
+        if traditional_chinese && let Some((code, _)) = self.tables.get_key_value("zh-tw") {
+            return code;
+        }
+
+        let simplified_chinese = normalized == "zh-hans"
+            || normalized.starts_with("zh-hans-")
+            || normalized
+                .split('-')
+                .any(|part| matches!(part, "cn" | "sg"));
+        if simplified_chinese && let Some((code, _)) = self.tables.get_key_value("zh") {
             return code;
         }
 
@@ -264,10 +284,52 @@ fn normalize_locale(locale: &str) -> String {
 
 fn locale_rank(locale: &str) -> u8 {
     match locale {
-        "en" => 0,
+        "zh-tw" => 0,
         "zh" => 1,
-        _ => 2,
+        "en" => 2,
+        _ => 3,
     }
+}
+
+/// 当前操作系统的 UI/用户 locale。Windows 直接读取 Win32 用户 locale；其他平台
+/// 使用标准 locale 环境变量。失败时回退英文。
+pub fn system_locale() -> String {
+    #[cfg(windows)]
+    if let Some(locale) = windows_user_locale() {
+        return locale;
+    }
+
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(locale) = env::var(key)
+            && let Some(locale) = locale.split('.').next()
+            && !locale.trim().is_empty()
+            && locale != "C"
+            && locale != "POSIX"
+        {
+            return locale.to_owned();
+        }
+    }
+    FALLBACK_LOCALE.to_owned()
+}
+
+#[cfg(windows)]
+fn windows_user_locale() -> Option<String> {
+    const LOCALE_NAME_MAX_LENGTH: usize = 85;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetUserDefaultLocaleName(locale_name: *mut u16, locale_name_size: i32) -> i32;
+    }
+
+    let mut buffer = [0_u16; LOCALE_NAME_MAX_LENGTH];
+    // SAFETY: buffer is writable for exactly LOCALE_NAME_MAX_LENGTH UTF-16 units and the Win32
+    // API writes a trailing NUL when successful.
+    let written =
+        unsafe { GetUserDefaultLocaleName(buffer.as_mut_ptr(), LOCALE_NAME_MAX_LENGTH as i32) };
+    if written <= 1 {
+        return None;
+    }
+    String::from_utf16(&buffer[..written as usize - 1]).ok()
 }
 
 #[cfg(test)]
@@ -281,8 +343,12 @@ mod tests {
         let catalog = I18nCatalog::load_embedded()?;
 
         assert_eq!(catalog.resolve_locale("zh_CN"), "zh");
+        assert_eq!(catalog.resolve_locale("zh_TW"), "zh-tw");
+        assert_eq!(catalog.resolve_locale("zh-Hant-HK"), "zh-tw");
+        assert_eq!(catalog.resolve_locale("zh-Hans-SG"), "zh");
         assert_eq!(catalog.resolve_locale("en-US"), "en");
         assert_eq!(catalog.resolve_locale("not-a-locale"), "en");
+        assert_eq!(catalog.available_locales(), ["zh-tw", "zh", "en"]);
         Ok(())
     }
 
@@ -310,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn flutter_baseline_locales_have_matching_keys() -> Result<(), I18nError> {
+    fn embedded_locales_have_matching_keys() -> Result<(), I18nError> {
         let catalog = I18nCatalog::load_embedded()?;
         let english = catalog
             .tables
@@ -320,8 +386,13 @@ mod tests {
             .tables
             .get("zh")
             .map(|table| table.keys().map(String::as_str).collect::<BTreeSet<_>>());
+        let traditional_chinese = catalog
+            .tables
+            .get("zh-tw")
+            .map(|table| table.keys().map(String::as_str).collect::<BTreeSet<_>>());
 
         assert_eq!(english, chinese);
+        assert_eq!(english, traditional_chinese);
         Ok(())
     }
 }

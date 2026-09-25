@@ -71,7 +71,10 @@ mod imp {
     impl Global for TrayState {}
 
     fn decode_icon(bytes: &[u8]) -> Option<Icon> {
-        let decoded = image::load_from_memory(bytes).ok()?.into_rgba8();
+        let decoded = image::load_from_memory(bytes).ok()?;
+        #[cfg(windows)]
+        let decoded = decoded.resize_exact(64, 64, image::imageops::FilterType::Lanczos3);
+        let decoded = decoded.into_rgba8();
         let (width, height) = decoded.dimensions();
         Icon::from_rgba(decoded.into_raw(), width, height).ok()
     }

@@ -176,12 +176,13 @@ fn install_close_policy(window: &mut Window, cx: &mut App) {
     window.on_window_should_close(cx, should_close);
 }
 
-/// 主窗口是否可立即关闭：托盘驻留 → 关；无活跃任务或还有其他窗口 → 关；否则弹
-/// 「下载仍在进行」确认框并返回 `false`（确认后由对话框自己关窗）。
+/// 主窗口原生关闭按钮在 Windows / macOS 上等价于“最小化到后台”：不移除最后一个
+/// GPUI 窗口，避免 GUI 进程随最后窗口关闭而被框架一并结束。真正退出统一由托盘 / 菜单
+/// “退出”处理，并同时终止 agent / daemon / NMH。
 pub fn should_close(window: &mut Window, cx: &mut App) -> bool {
-    let close_to_tray = Desktop::pref_bool(cx, "close_to_tray", true);
-    if close_to_tray && WindowRegistry::is_resident(cx) {
-        return true;
+    if cfg!(any(windows, target_os = "macos")) {
+        window.minimize_window();
+        return false;
     }
     if Desktop::active_task_count(cx) == 0 || WindowRegistry::open_count(cx) > 1 {
         return true;

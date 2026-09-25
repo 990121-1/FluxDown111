@@ -311,13 +311,32 @@ pub fn confirm_active_tasks(
     cx: &mut App,
     on_ok: impl Fn(&mut Window, &mut App) + 'static,
 ) {
+    confirm_active_tasks_with_hint(window, cx, "closeWithActiveTasksHint", on_ok);
+}
+
+/// 真正退出应用时的确认框。确认后后台 agent/daemon 也会一并终止，因此提示文案
+/// 与“仅关闭主窗口”不同，必须明确说明下载会停止。
+pub fn confirm_quit_active_tasks(
+    window: &mut Window,
+    cx: &mut App,
+    on_ok: impl Fn(&mut Window, &mut App) + 'static,
+) {
+    confirm_active_tasks_with_hint(window, cx, "quitWithActiveTasksHint", on_ok);
+}
+
+fn confirm_active_tasks_with_hint(
+    window: &mut Window,
+    cx: &mut App,
+    hint_key: &'static str,
+    on_ok: impl Fn(&mut Window, &mut App) + 'static,
+) {
     let id = window.window_handle().window_id();
     if !cx.global_mut::<WindowRegistry>().confirming.insert(id) {
         return;
     }
     let translator = Desktop::global(cx).translator.read(cx).clone();
     let title = translator.text("closeWithActiveTasksTitle").to_owned();
-    let hint = translator.text("closeWithActiveTasksHint").to_owned();
+    let hint = translator.text(hint_key).to_owned();
     let ok = translator.text("menuQuit").to_owned();
     let cancel = translator.text("cancel").to_owned();
     let on_ok = Rc::new(on_ok);

@@ -568,6 +568,56 @@
   opacity: 0.72;
 }
 
+/* 当前真正播放器 / resolver 主入口。与普通高可信度资源区分开：整张卡高亮，
+ * 让用户第一眼只看到“现在这支”，其余预载资源折叠在下方。 */
+.resource-row.primary-media {
+  border: 1px solid rgba(59, 130, 246, 0.48);
+  border-left: 3px solid var(--fd-accent);
+  background: rgba(59, 130, 246, 0.09);
+  padding-left: 11px;
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.05);
+}
+
+.resource-row .meta .now-playing-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--fd-accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 10px;
+}
+
+.secondary-media-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+}
+
+.secondary-media-line {
+  flex: 1;
+  height: 1px;
+  background: var(--fd-border);
+}
+
+.secondary-media-btn {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--fd-text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.secondary-media-btn:hover {
+  background: var(--fd-hover);
+  color: var(--fd-text-secondary);
+}
+
 .resource-row.media-candidate-row .candidate-meta {
   flex-wrap: wrap;
 }
@@ -620,6 +670,22 @@
 
 .resource-row .meta .size {
   color: var(--fd-text-muted);
+}
+
+/* 实际下载地址：在自动弹出的资源窗中直接可见，过长时省略；悬停可从 title
+ * 查看完整 URL。允许单独选取复制，不影响宿主页面的文本选择策略。 */
+.resource-row .source-url {
+  margin-top: 3px;
+  color: var(--fd-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 9px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .resource-row .dl-btn {

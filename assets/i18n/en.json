@@ -1230,6 +1230,7 @@
   "menuCycleSort": "Switch Sorting",
   "closeWithActiveTasksTitle": "Downloads are still running",
   "closeWithActiveTasksHint": "Downloads continue in the background service after the window closes.",
+  "quitWithActiveTasksHint": "Exiting FluxDown will stop the background services and all active downloads.",
   "protocolVersionLabel": "Protocol version",
   "updateAvailableToast": "Version v{v} is available.",
   "goToDownload": "Go to download",

@@ -3,10 +3,13 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 struct BootstrapState {
@@ -32,6 +35,9 @@ impl ServiceBootstrap {
     /// 先探测目标端口。这样当另一桌面进程或直接启动的 agent 正在完成
     /// 初始化（尚未写出 bearer）时，不会反复拉起会立即因独占锁退出的子进程。
     pub async fn ensure_running(&self, rpc_url: &str) -> Result<(), BootstrapError> {
+        if SHUTTING_DOWN.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let mut state = self.state.lock().await;
         state.reapers.retain(|task| !task.is_finished());
         if state.running {
@@ -62,6 +68,32 @@ impl ServiceBootstrap {
             }
         }));
         Ok(())
+    }
+}
+
+/// 显式“退出 FluxDown”时终止本机后台栈。
+///
+/// 关闭主窗口只隐藏到托盘，不会调用这里；只有真正退出才结束 agent / daemon /
+/// Native Messaging Host，避免 GUI 消失后还留下后台进程。
+pub fn terminate_background_stack() {
+    // 先阻止 AgentClient 的重连循环在 taskkill 后把 agent 再拉起来；进程下次启动时
+    // static 会自然恢复为 false。
+    SHUTTING_DOWN.store(true, Ordering::Release);
+    #[cfg(windows)]
+    {
+        // 先结束 agent 进程树，它通常拥有由 supervisor 拉起的 fluxdownd；再分别清理
+        // NMH 与可能独立启动/遗留的 daemon。taskkill 通过 CREATE_NO_WINDOW 执行，
+        // 不弹出额外控制台窗口。
+        for image in ["fluxdown-agent.exe", "fluxdown_nmh.exe", "fluxdownd.exe"] {
+            let mut command = std::process::Command::new("taskkill");
+            command.args(["/F", "/T", "/IM", image]);
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            set_no_console_window(&mut command);
+            let _ = command.status();
+        }
     }
 }
 
