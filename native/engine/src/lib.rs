@@ -312,6 +312,9 @@ impl Engine {
                 .unwrap_or_default();
             let plugins_root = data_dir_p.join("plugins");
             let _ = tokio::fs::create_dir_all(&plugins_root).await;
+            if let Err(e) = plugin::bundled::sync_bundled_plugins(&plugins_root).await {
+                crate::log_info!("[plugin] bundled plugin sync failed: {e}");
+            }
             let pm = Arc::new(plugin::PluginManager::new(
                 runtime,
                 bridge,
