@@ -11,7 +11,7 @@
 //! GitHub Release 直接下载**单个平台二进制**（无归档解压，区别于 ffmpeg）：
 //! Windows/Linux(glibc+musl)/macOS 全平台官方构建。可安装版本 = 近期 Release
 //! 的日期 tag（[`list_ytdlp_versions`]）；二进制不随安装包分发，运行时按需由
-//! 用户主动触发下载（合规边界）。
+//! 桌面/daemon 可在内建 YouTube resolver 启动引导阶段自动触发；设置页也可手动安装。
 
 use std::path::{Path, PathBuf};
 
@@ -218,10 +218,8 @@ mod install {
     use super::{CONFIG_YTDLP_MANAGED_VERSION, YtdlpStatus, managed_ytdlp_path, platform_asset};
     use crate::db::Db;
 
-    /// yt-dlp Release 列表（分页）与指定 tag / latest 的 GitHub API 端点。
+    /// yt-dlp Release 列表（分页）GitHub API 端点；安装本身直接走稳定资产 URL。
     const RELEASES_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=30";
-    const RELEASE_TAG_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/";
-    const RELEASE_LATEST_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 
     /// 可安装版本列表（近期 Release 的日期 tag，降序）。
     #[derive(Debug, Clone)]
@@ -272,25 +270,16 @@ mod install {
     ) -> Result<YtdlpStatus, ComponentError> {
         let asset = platform_asset().ok_or(ComponentError::Unsupported)?;
         let mirror_base = super::super::component_mirror_base(db).await;
-        let url = match version {
-            Some(tag) => format!("{RELEASE_TAG_API}{tag}"),
-            None => RELEASE_LATEST_API.to_string(),
+        // 资产名与 tag URL 都是 yt-dlp 官方稳定契约。直接走 GitHub Release 资产，
+        // 避免首次启动额外依赖 api.github.com 的 JSON 响应；部分 Windows 网络环境
+        // 会把 API 响应中途截断，表现为 `error decoding response body`，但 Release
+        // 资产本身可正常下载。指定版本和 latest 都可用同一条稳定 URL 规则。
+        let dl_url = match version {
+            Some(tag) => {
+                format!("https://github.com/yt-dlp/yt-dlp/releases/download/{tag}/{asset}")
+            }
+            None => format!("https://github.com/yt-dlp/yt-dlp/releases/latest/download/{asset}"),
         };
-        let release =
-            super::super::fetch_github_json_with_mirror(client, &url, &mirror_base).await?;
-        let chosen_ver = release["tag_name"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| ComponentError::NotFound("release tag_name".to_string()))?
-            .to_string();
-        let empty = Vec::new();
-        let assets = release["assets"].as_array().unwrap_or(&empty);
-        let dl_url = assets
-            .iter()
-            .find(|a| a["name"].as_str() == Some(asset))
-            .and_then(|a| a["browser_download_url"].as_str())
-            .ok_or_else(|| ComponentError::NotFound(format!("asset {asset} ({chosen_ver})")))?
-            .to_string();
 
         // 单文件二进制：流式下载到 bin/ 下临时文件，验证后原子替换目标。
         let bin_dir = data_dir.join("bin");
@@ -322,7 +311,7 @@ mod install {
 
         // 安装后验证：能跑 `--version` 才算成功。
         let probed = super::probe_ytdlp_version(&target).await;
-        if probed.is_none() {
+        let Some(chosen_ver) = probed else {
             let _ = tokio::fs::remove_file(&target).await;
             return Err(ComponentError::Verify(
                 "downloaded yt-dlp failed to run; the binary may be incompatible with \
@@ -330,7 +319,7 @@ mod install {
                  and set a manual path"
                     .to_string(),
             ));
-        }
+        };
         db.set_config(CONFIG_YTDLP_MANAGED_VERSION, &chosen_ver)
             .await
             .map_err(|e| ComponentError::Db(e.to_string()))?;

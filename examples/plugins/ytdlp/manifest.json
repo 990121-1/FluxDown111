@@ -1,8 +1,8 @@
 {
   "identity": "fluxdown@ytdlp",
   "name": "yt-dlp 通用视频解析",
-  "version": "3.0.0",
-  "description": "经 FluxDown yt-dlp 组件把视频页解析为可下载直链，交回引擎多段并发下载 + 断点续传。为避免误接管任意链接，仅对一批社区默认、低版权风险的主流平台生效：YouTube / Bilibili（B站）/ Niconico / Twitch / Vimeo / Dailymotion / SoundCloud / AcFun（A站）。画质在下载时经画质选择弹框由用户挑选（含各分辨率与仅音频档，非在设置里固定）；可为需要登录的平台分别配置 Cookie（如 B站大会员画质、YouTube 会员/风控、Vimeo 私有视频）。⚠ YouTube 依赖 JS 运行时：需在系统 PATH 安装 Node.js（≥22）或 Deno（≥2.3），否则无法求解 n-sig 挑战（其他平台通常不需要）。签名直链自动按一次性 URL 处理并透传 http_headers 鉴权头。关闭「优先 MP4 容器」时下载完成后经 ffmpeg 转码为 H.264/AAC mp4。需在 App「组件」页安装 yt-dlp（及可选 ffmpeg）。",
+  "version": "3.3.0",
+  "description": "经 FluxDown yt-dlp 组件把视频页解析为可下载直链，交回引擎多段并发下载 + 断点续传。为避免误接管任意链接，仅对白名单平台生效：YouTube / Facebook Reels与公开视频 / Instagram 单支 Reel 与 /用户名/reels/ 批量下载 / Bilibili（B站）/ Niconico / Twitch / Vimeo / Dailymotion / SoundCloud / AcFun（A站）。画质在下载时经画质选择弹框由用户挑选（含各分辨率与仅音频档，非在设置里固定）；可为需要登录的平台分别配置 Cookie。⚠ YouTube 依赖 JS 运行时：需在系统 PATH 安装 Node.js（≥22）或 Deno（≥2.3），否则无法求解 n-sig 挑战（其他平台通常不需要）。签名直链自动按一次性 URL 处理并透传 http_headers 鉴权头。关闭「优先 MP4 容器」时下载完成后经 ffmpeg 转码为 H.264/AAC mp4。",
   "homepage": "https://fluxdown.zerx.dev",
   "minAppVersion": "0.1.60",
   "permissions": ["ytdlp", "ffmpeg"],
@@ -15,6 +15,17 @@
           "*://m.youtube.com/*",
           "*://music.youtube.com/*",
           "*://youtu.be/*",
+          "*://www.facebook.com/*",
+          "*://facebook.com/*",
+          "*://m.facebook.com/*",
+          "*://web.facebook.com/*",
+          "*://fb.watch/*",
+          "*://www.instagram.com/*/reel/*",
+          "*://instagram.com/*/reel/*",
+          "*://www.instagram.com/reel/*",
+          "*://instagram.com/reel/*",
+          "*://www.instagram.com/*/reels/*",
+          "*://instagram.com/*/reels/*",
           "*://www.bilibili.com/*",
           "*://bilibili.com/*",
           "*://m.bilibili.com/*",
@@ -38,7 +49,8 @@
         ]
       },
       "entry": "resolve.js",
-      "timeoutMs": 45000
+      "timeoutMs": 45000,
+      "multi": true
     }
   ],
   "hooks": {
@@ -51,6 +63,17 @@
         "*://m.youtube.com/*",
         "*://music.youtube.com/*",
         "*://youtu.be/*",
+        "*://www.facebook.com/*",
+        "*://facebook.com/*",
+        "*://m.facebook.com/*",
+        "*://web.facebook.com/*",
+        "*://fb.watch/*",
+        "*://www.instagram.com/*/reel/*",
+        "*://instagram.com/*/reel/*",
+        "*://www.instagram.com/reel/*",
+        "*://instagram.com/reel/*",
+        "*://www.instagram.com/*/reels/*",
+        "*://instagram.com/*/reels/*",
         "*://www.bilibili.com/*",
         "*://bilibili.com/*",
         "*://m.bilibili.com/*",
@@ -124,6 +147,22 @@
       "default": "",
       "helperScript": "(() => { const h = location.hostname; if (!h.endsWith('bilibili.com')) { console.log('%c[FluxDown] 请先打开并登录 www.bilibili.com，再在本页 Console 执行本脚本', 'color:#e11'); return; } const readable = document.cookie.split('; ').filter(Boolean); const names = readable.map(s => s.split('=')[0]); if (!names.includes('SESSDATA')) { console.log('%c[FluxDown] 未读到 SESSDATA（HttpOnly，Console 读不到）。请用「开发者工具→网络 / Network 面板→刷新→点任意 bilibili.com 请求→请求标头 cookie:」完整复制后粘贴到插件 Bilibili Cookie 输入框', 'color:#e11;font-weight:bold'); return; } const s = readable.join('; '); try { copy(s); console.log('%c[FluxDown] 已复制 ' + readable.length + ' 条 cookie 到剪贴板，粘贴到插件 Bilibili Cookie 输入框即可', 'color:#0a0'); } catch (e) { console.log('[FluxDown] 自动复制失败，请手动复制下面一行：'); console.log(s); } })();",
       "helperLabel": "复制 Bilibili Cookie 脚本"
+    },
+    {
+      "key": "cookiesFacebook",
+      "title": "Facebook Cookie",
+      "description": "下载仅登录后可见、年龄/地区受限或 Facebook 风控要求登录的 Reel/视频时填写。公开视频通常无需 Cookie。支持浏览器 Cookie 头（k=v; k2=v2）或 Netscape cookies.txt 内容。",
+      "type": "string",
+      "widget": "textarea",
+      "default": ""
+    },
+    {
+      "key": "cookiesInstagram",
+      "title": "Instagram Cookie",
+      "description": "下载仅登录后可见、年龄/地区受限或 Instagram 风控要求登录的 Reel 时填写。公开 Reel 通常无需 Cookie。支持浏览器 Cookie 头（k=v; k2=v2）或 Netscape cookies.txt 内容。",
+      "type": "string",
+      "widget": "textarea",
+      "default": ""
     },
     {
       "key": "cookiesNiconico",

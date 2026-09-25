@@ -821,6 +821,22 @@ export function isStreamingUrl(url: string): boolean {
 }
 
 /**
+ * 响应头尚不可用时可安全预登记的显式流媒体清单 URL。
+ *
+ * 这里只认 URL pathname 最后一段的真实 `.m3u8` / `.mpd` 扩展名；不把
+ * `/manifest` / `/playlist` 这种语义路径算进来，因为它们也常被普通 JSON API
+ * 使用。语义路径仍由 onHeadersReceived 的 MIME 判定或 Main World 响应体嗅探确认。
+ */
+export function isExplicitStreamManifestUrl(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    return pathname.endsWith(".m3u8") || pathname.endsWith(".mpd");
+  } catch {
+    return /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(url);
+  }
+}
+
+/**
  * 判断 URL 是否指向可嗅探的媒体/可下载资源（页面内 DOM/fetch 上报的兜底判定）。
  *
  * 走规则表的后缀维度：命中一条启用的正向规则即可。当服务器对媒体文件返回不规范的

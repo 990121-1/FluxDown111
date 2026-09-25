@@ -1439,9 +1439,10 @@ fn apply_chosen_variant(
 ) {
     if let Some(v) = variants.into_iter().nth(idx.max(0) as usize) {
         res.url = v.url;
-        if v.audio_url.is_some() {
-            res.audio_url = v.audio_url;
-        }
+        // Resolver wire format uses an explicit empty string to mean "this variant has no
+        // separate audio track". Normalize that sentinel to None; keeping Some("") makes the
+        // scheduler route an ordinary progressive MP4 through the DASH track-pair downloader.
+        res.audio_url = v.audio_url.filter(|url| !url.trim().is_empty());
         if v.file_name.is_some() {
             res.file_name = v.file_name;
         }
@@ -4772,6 +4773,17 @@ impl DownloadManager {
                 .any(|name| name.eq_ignore_ascii_case("user-agent"))
         {
             extra_headers.insert("User-Agent".to_string(), user_agent.clone());
+        }
+        // Referrer 也是浏览器请求身份的一部分。普通 HTTP RequestSpec 会单独应用
+        // `referrer`，但 HLS/DASH 子请求（media playlist / segment / key）只消费
+        // `extra_headers`。若不把显式 Referrer 一并持久化，部分防盗链 CDN 会允许
+        // 浏览器播放却对 FluxDown 分片请求返回 403。调用方已捕获的 Referer 头优先。
+        if !referrer.is_empty()
+            && !extra_headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("referer"))
+        {
+            extra_headers.insert("Referer".to_string(), referrer.clone());
         }
         // 任务必属队列：未指定时归入内置主队列（'' 不再是有效归属，统一
         // 覆盖旧客户端信号 / aria2 / REST / CLI 等所有创建入口）。

@@ -7,7 +7,7 @@ use reqwest::Client;
 use reqwest::header::HeaderValue;
 use thiserror::Error;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -360,29 +360,13 @@ pub(crate) fn apply_extra_headers(
         return req;
     }
 
-    /// Headers that must never be forwarded from the browser extension.
-    /// Compared case-insensitively via `HeaderName` (which lowercases).
-    const BLOCKED_HEADERS: &[&str] = &[
-        "accept-encoding",
-        "content-encoding",
-        "transfer-encoding",
-        "host",
-        "content-length",
-        "connection",
-        "range",
-        "if-range",
-    ];
-
     let mut map = reqwest::header::HeaderMap::with_capacity(extra_headers.len());
     for (name, value) in extra_headers {
         if let (Ok(header_name), Ok(header_value)) = (
             reqwest::header::HeaderName::from_bytes(name.as_bytes()),
             reqwest::header::HeaderValue::from_str(value),
         ) {
-            if BLOCKED_HEADERS
-                .iter()
-                .any(|&blocked| header_name.as_str() == blocked)
-            {
+            if !captured_header_is_forwardable(header_name.as_str()) {
                 log_info!(
                     "[extra-headers] filtered dangerous header: {}",
                     header_name.as_str()
@@ -395,6 +379,252 @@ pub(crate) fn apply_extra_headers(
     // req.headers(map) 内部用 insert 逐个替换同名头，
     // 确保浏览器的真实 User-Agent 等值覆盖 build_client 设的默认值。
     req.headers(map)
+}
+
+/// Returns whether a browser-captured header is safe to replay to the actual resource request.
+/// Shared by reqwest and the Windows curl fallback so both transports preserve identical rules.
+pub(crate) fn captured_header_is_forwardable(name: &str) -> bool {
+    ![
+        "accept-encoding",
+        "content-encoding",
+        "transfer-encoding",
+        "host",
+        "content-length",
+        "connection",
+        "range",
+        "if-range",
+    ]
+    .iter()
+    .any(|blocked| name.eq_ignore_ascii_case(blocked))
+}
+
+/// Windows fallback transport for origins that accept browser/curl traffic but reject reqwest's
+/// TLS/HTTP fingerprint with 403. This is deliberately narrow: callers should invoke it only
+/// after the primary reqwest path has been explicitly rejected by the origin.
+///
+/// The helper does not invoke a shell, forwards only validated/safe captured headers, restricts
+/// redirects to HTTP(S), and streams stdout with a hard size cap so a hostile response cannot
+/// allocate unbounded memory. `curl.exe` is bundled with supported Windows versions; if it is
+/// absent the caller simply receives an error and keeps the original reqwest failure semantics.
+pub(crate) struct CurlGetResult {
+    pub bytes: Vec<u8>,
+    pub effective_url: String,
+}
+
+pub(crate) async fn curl_get_bytes_fallback(
+    url: &str,
+    cookies: &str,
+    extra_headers: &std::collections::HashMap<String, String>,
+    byte_range: Option<(u64, u64)>,
+    cancel_token: Option<&tokio_util::sync::CancellationToken>,
+    max_bytes: usize,
+) -> Result<CurlGetResult, DownloadError> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (
+            url,
+            cookies,
+            extra_headers,
+            byte_range,
+            cancel_token,
+            max_bytes,
+        );
+        return Err(DownloadError::Other(
+            "curl fallback transport is only enabled on Windows".to_string(),
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let parsed = url::Url::parse(url)
+            .map_err(|e| DownloadError::Other(format!("curl fallback invalid URL: {e}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(DownloadError::Other(format!(
+                "curl fallback refuses non-HTTP(S) URL: {}",
+                parsed.scheme()
+            )));
+        }
+
+        let mut cmd = tokio::process::Command::new("curl.exe");
+        crate::proc::no_console_window(&mut cmd);
+        cmd.arg("--silent")
+            .arg("--show-error")
+            .arg("--fail")
+            .arg("--location")
+            .arg("--http1.1")
+            .arg("--connect-timeout")
+            .arg("15")
+            .arg("--speed-time")
+            .arg("30")
+            .arg("--speed-limit")
+            .arg("1")
+            .arg("--proto")
+            .arg("=http,https")
+            .arg("--proto-redir")
+            .arg("=http,https")
+            .arg("--write-out")
+            .arg("%{stderr}\nFLUXDOWN_EFFECTIVE_URL:%{url_effective}")
+            .arg("--header")
+            .arg("Accept-Encoding: identity")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        if !cookies.is_empty() {
+            let value = reqwest::header::HeaderValue::from_str(cookies).map_err(|_| {
+                DownloadError::Other("curl fallback rejected invalid Cookie header".to_string())
+            })?;
+            let cookie = value.to_str().map_err(|_| {
+                DownloadError::Other("curl fallback rejected non-text Cookie header".to_string())
+            })?;
+            cmd.arg("--cookie").arg(cookie);
+        }
+
+        // curl's dedicated UA / Referer options intentionally come before generic -H replay.
+        // Some anti-bot CDNs fingerprint not just values but libcurl's normal header ordering;
+        // passing an identical User-Agent via `-H` can be rejected while `--user-agent` works.
+        let mut curl_user_agent: Option<&str> = None;
+        let mut curl_referer: Option<&str> = None;
+        for (name, value) in extra_headers {
+            if name.eq_ignore_ascii_case("user-agent") {
+                curl_user_agent = Some(value.as_str());
+            } else if name.eq_ignore_ascii_case("referer") {
+                curl_referer = Some(value.as_str());
+            }
+        }
+        if let Some(value) = curl_user_agent {
+            let value = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+                DownloadError::Other("curl fallback rejected invalid User-Agent".to_string())
+            })?;
+            if let Ok(value) = value.to_str() {
+                cmd.arg("--user-agent").arg(value);
+            }
+        }
+        if let Some(value) = curl_referer {
+            let value = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+                DownloadError::Other("curl fallback rejected invalid Referer".to_string())
+            })?;
+            if let Ok(value) = value.to_str() {
+                cmd.arg("--referer").arg(value);
+            }
+        }
+
+        for (name, value) in extra_headers {
+            if name.eq_ignore_ascii_case("user-agent") || name.eq_ignore_ascii_case("referer") {
+                continue;
+            }
+            let Ok(header_name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) else {
+                continue;
+            };
+            let Ok(header_value) = reqwest::header::HeaderValue::from_str(value) else {
+                continue;
+            };
+            if !captured_header_is_forwardable(header_name.as_str()) {
+                continue;
+            }
+            let Ok(header_value) = header_value.to_str() else {
+                continue;
+            };
+            cmd.arg("--header")
+                .arg(format!("{}: {}", header_name.as_str(), header_value));
+        }
+
+        if let Some((offset, length)) = byte_range {
+            if length == 0 {
+                return Err(DownloadError::Other(
+                    "curl fallback byte range length must be > 0".to_string(),
+                ));
+            }
+            let end = offset
+                .checked_add(length)
+                .and_then(|v| v.checked_sub(1))
+                .ok_or_else(|| DownloadError::Other("curl fallback range overflow".to_string()))?;
+            cmd.arg("--range").arg(format!("{offset}-{end}"));
+        }
+        cmd.arg("--").arg(url);
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| DownloadError::Other(format!("curl fallback spawn failed: {e}")))?;
+        let mut stdout = child.stdout.take().ok_or_else(|| {
+            DownloadError::Other("curl fallback stdout pipe unavailable".to_string())
+        })?;
+        let mut stderr = child.stderr.take().ok_or_else(|| {
+            DownloadError::Other("curl fallback stderr pipe unavailable".to_string())
+        })?;
+
+        let stderr_task = tokio::spawn(async move {
+            let mut limited = (&mut stderr).take(64 * 1024);
+            let mut buf = Vec::new();
+            let _ = limited.read_to_end(&mut buf).await;
+            buf
+        });
+
+        let mut body = Vec::new();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            let read = if let Some(cancel) = cancel_token {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        let _ = child.kill().await;
+                        let _ = stderr_task.await;
+                        return Err(DownloadError::Cancelled);
+                    }
+                    result = stdout.read(&mut chunk) => result,
+                }
+            } else {
+                stdout.read(&mut chunk).await
+            }
+            .map_err(DownloadError::Io)?;
+
+            if read == 0 {
+                break;
+            }
+            if body.len().saturating_add(read) > max_bytes {
+                let _ = child.kill().await;
+                let _ = stderr_task.await;
+                return Err(DownloadError::Other(format!(
+                    "curl fallback response exceeds {} MB limit",
+                    max_bytes / (1024 * 1024)
+                )));
+            }
+            body.extend_from_slice(&chunk[..read]);
+        }
+
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| DownloadError::Other(format!("curl fallback wait failed: {e}")))?;
+        let stderr = stderr_task.await.unwrap_or_default();
+        let stderr_text = String::from_utf8_lossy(&stderr);
+        if !status.success() {
+            return Err(DownloadError::Other(format!(
+                "curl fallback failed ({status}): {}",
+                stderr_text.trim()
+            )));
+        }
+        if let Some((_, length)) = byte_range
+            && body.len() as u64 != length
+        {
+            return Err(DownloadError::Other(format!(
+                "curl fallback ranged response length mismatch: got {}, expected {}",
+                body.len(),
+                length
+            )));
+        }
+        let effective_url = stderr_text
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("FLUXDOWN_EFFECTIVE_URL:"))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(url)
+            .trim()
+            .to_string();
+        Ok(CurlGetResult {
+            bytes: body,
+            effective_url,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

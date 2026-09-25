@@ -91,13 +91,15 @@
   **删除任务不触发自动重下**：单删/批删在同一事务清空 RSS 条目的任务回链，将原 `Downloaded` 改为 `Ignored`（已读），其余处置状态保留；不能退回 `New`，否则下一轮自动抓取会重新派发。提交后仅向受影响订阅广播条目快照及源计数，手动下载仍对任何状态开放。
 
 ### 受管组件子系统（`components/`，`components` feature）
-外部二进制 **ffmpeg + yt-dlp** 的按需安装器/解析器（**不打包**，合规边界——用户在设置「组件」页触发下载）。解析优先级 `manual`（config path）→ `managed`（`<data_dir>/bin/`）→ `system` PATH，wire 为 `ComponentSource{Manual,Managed,System,None}`。ffmpeg = BtbN 静态归档（取单文件，macOS 不支持受管）；yt-dlp = 单平台二进制（全平台）。版本列表经官方镜像 `fluxdown.zerx.dev/api/components` + GitHub 兜底。**被两处消费**：插件 `flux.ffmpeg`/`flux.ytdlp` 能力面 + 设置「组件」UI。
+外部二进制 **ffmpeg + yt-dlp** 的受管安装器/解析器。Windows 桌面/daemon **随 EXE 内建一份 yt-dlp**，首次启动若 `bin/yt-dlp.exe` 缺失即原子解出，避免 YouTube 基础能力受 GitHub 网络速度影响；其他平台仍按需联网安装。ffmpeg 不随包分发，后台按需安装；内建 YouTube resolver 的默认档优先选已混流格式，因此 ffmpeg 尚未就绪时也能先得到单一可播放文件，高画质分离轨则在 ffmpeg 就绪后 mux。设置「组件」页仍保留手动安装、切换版本与路径覆盖。解析优先级 `manual`（config path）→ `managed`（`<data_dir>/bin/`）→ `system` PATH，wire 为 `ComponentSource{Manual,Managed,System,None}`。ffmpeg = BtbN 静态归档（取单文件，macOS 不支持受管）；yt-dlp = 单平台二进制（全平台）。版本列表经官方镜像 `fluxdown.zerx.dev/api/components` + GitHub 兜底。**被两处消费**：插件 `flux.ffmpeg`/`flux.ytdlp` 能力面 + 设置「组件」UI。
+
+Windows HLS 另有一层**按需 curl 传输兜底**：主链路仍使用 reqwest（HTTP/1.1 + native-tls），只有 playlist / AES key / segment 明确收到 `403 Forbidden` 时才尝试系统 `curl.exe`。兜底沿用经过过滤的浏览器请求上下文，并用 curl 原生 `--user-agent` / `--referer` / `--cookie` 参数保持标准 header 排列；所有子进程经 `proc::no_console_window`，且限制协议为 HTTP(S)、响应大小与连接/低速超时。用途是兼容会按 HTTP/TLS/header-order 指纹拒绝 reqwest、但允许真实浏览器/libcurl 的流媒体 CDN；正常下载不会额外启动 curl。
 
 ---
 
 ## 插件系统（`native/engine/src/plugin`，`plugins` feature）
 
-**可选、可失败的下载任务中间层**，JS 编写（rquickjs 沙箱），声明式设置项（双端自动生成表单）。两个正交能力平面 + 门控工具面：
+**可选、可失败的下载任务中间层**，JS 编写（rquickjs 沙箱），声明式设置项（双端自动生成表单）。桌面/daemon 构建会把 `examples/plugins/ytdlp` 作为内建资源编入引擎，并在插件目录缺失时自动种入 `fluxdown@ytdlp`，因此新安装无需手动安装 YouTube resolver。两个正交能力平面 + 门控工具面：
 
 - **订阅平面**：manifest `subscriptions:[{providerId,entry,timeoutMs}]` 声明 provider，脚本导出 `globalThis.subscribe(ctx)`，通过 `flux.fetch` 自主完成平台请求/解析，返回 `{title,link,items:[{guid,title,link,enclosureUrl,resolverItem,enclosureLength,pubDate}]}`（`providerId` 不得占用内置 `rss`；单条非法跳过并记日志，全部非法才算失败；`ctx.providerConfig` 空值归一为 `{}`）；宿主自动把它挂到公共订阅调度，插件安装/启停后由动态路由读取最新快照。
 - **Resolver 平面**：`resolve(url,ctx)→{url}|{manifest}|null`。协议判定**之前**惰性执行、**off-actor**（防冻结 actor），命中后 fail-closed（失败进 status=4，绝不把 HTML 当视频存）。惰性 = 每次 start/resume 重跑，天然防直链过期。支持两段式：初段返 manifest 清单 → 引擎裂变为任务组；二段（`ctx.resolverItem`）返直链。`multi:true` 触发新建对话框前置预解析（`begin_resolve_preview` 只读）。

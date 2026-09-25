@@ -1,6 +1,6 @@
 //! 进程生成的跨平台辅助。
 //!
-//! 引擎会拉起若干**控制台子进程**（ffmpeg / ffprobe / yt-dlp / tar，以及组件
+//! 引擎会拉起若干**控制台子进程**（ffmpeg / ffprobe / yt-dlp / curl / tar，以及组件
 //! 版本探测 `-version` / `--version`）。在 Windows 上，若不显式设置
 //! `CREATE_NO_WINDOW`，每次拉起都会闪现一个黑色控制台窗口——打开设置「组件」
 //! 页做版本探测时尤其高频、肉眼可见。

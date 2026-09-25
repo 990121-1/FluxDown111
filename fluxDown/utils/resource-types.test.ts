@@ -3,6 +3,7 @@ import {
   applySniffRuleOverrides,
   getDefaultSniffRules,
   groupTrackPairs,
+  isExplicitStreamManifestUrl,
   matchSniffRule,
 } from "./resource-types";
 import type { DetectedResource } from "./resource-types";
@@ -37,6 +38,19 @@ describe("matchSniffRule — 后缀命中", () => {
       category: "stream",
       blocked: false,
     });
+  });
+});
+
+describe("isExplicitStreamManifestUrl", () => {
+  test("识别带 query 的 HLS / DASH 显式清单", () => {
+    expect(isExplicitStreamManifestUrl("https://cdn.example/live/master.m3u8?token=abc")).toBe(true);
+    expect(isExplicitStreamManifestUrl("https://cdn.example/v/stream.MPD#x")).toBe(true);
+  });
+
+  test("不把普通 /manifest /playlist API 预登记为清单", () => {
+    expect(isExplicitStreamManifestUrl("https://api.example/video/manifest?id=1")).toBe(false);
+    expect(isExplicitStreamManifestUrl("https://api.example/playlist/123")).toBe(false);
+    expect(isExplicitStreamManifestUrl("https://cdn.example/segment.ts")).toBe(false);
   });
 });
 

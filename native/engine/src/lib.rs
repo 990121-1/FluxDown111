@@ -75,6 +75,106 @@ use model::{BtFileEntry, HlsQualityOption, TorrentMetaResult};
 use proxy_config::ProxyConfig;
 use selection::{HostSelection, SelectionOutcome};
 
+#[cfg(feature = "plugins")]
+const BUILTIN_YTDLP_PLUGIN_ID: &str = "fluxdown@ytdlp";
+
+#[cfg(all(feature = "plugins", feature = "components", target_os = "windows"))]
+const BUNDLED_YTDLP_EXE: &[u8] = include_bytes!("../../../assets/components/windows/yt-dlp.exe");
+
+#[cfg(feature = "plugins")]
+async fn ensure_builtin_ytdlp_plugin(root: &std::path::Path) -> Result<(), std::io::Error> {
+    let dest = root.join(BUILTIN_YTDLP_PLUGIN_ID);
+    let manifest = dest.join("manifest.json");
+    tokio::fs::create_dir_all(&dest).await?;
+    // This is an app-owned built-in plugin, not a user plugin. Refresh its bundled files on every
+    // startup so an application upgrade can add supported sites/fixes for existing installations.
+    // Plugin settings are persisted separately in the DB and are not touched here.
+    tokio::fs::write(
+        &manifest,
+        include_bytes!("../../../examples/plugins/ytdlp/manifest.json"),
+    )
+    .await?;
+    tokio::fs::write(
+        dest.join("resolve.js"),
+        include_bytes!("../../../examples/plugins/ytdlp/resolve.js"),
+    )
+    .await?;
+    tokio::fs::write(
+        dest.join("hooks.js"),
+        include_bytes!("../../../examples/plugins/ytdlp/hooks.js"),
+    )
+    .await?;
+    log_info!("[plugin] refreshed built-in yt-dlp resolver: {BUILTIN_YTDLP_PLUGIN_ID}");
+    Ok(())
+}
+
+#[cfg(all(feature = "plugins", feature = "components", target_os = "windows"))]
+async fn ensure_bundled_ytdlp(data_dir: &std::path::Path) -> Result<(), std::io::Error> {
+    let target = components::managed_ytdlp_path(data_dir);
+    if target.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    // Same-directory temp + rename prevents a crash during first-run extraction from leaving a
+    // truncated executable that `resolve_ytdlp` would otherwise mistake for a valid component.
+    let tmp = target.with_extension("exe.bootstrap");
+    tokio::fs::write(&tmp, BUNDLED_YTDLP_EXE).await?;
+    match tokio::fs::rename(&tmp, &target).await {
+        Ok(()) => {}
+        Err(_) => {
+            tokio::fs::copy(&tmp, &target).await?;
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+    }
+    log_info!(
+        "[components] extracted bundled yt-dlp to {}",
+        target.display()
+    );
+    Ok(())
+}
+
+#[cfg(all(feature = "plugins", feature = "components"))]
+async fn ensure_youtube_components(db: &Db, data_dir: &std::path::Path) {
+    let need_ytdlp = components::resolve_ytdlp(db, data_dir).await.is_none();
+    let need_ffmpeg = components::resolve_ffmpeg(db, data_dir).await.is_none();
+    if !need_ytdlp && !need_ffmpeg {
+        return;
+    }
+
+    let client = match reqwest::Client::builder().user_agent("FluxDown").build() {
+        Ok(client) => client,
+        Err(error) => {
+            log_info!("[components] failed to create bootstrap HTTP client: {error}");
+            return;
+        }
+    };
+    let progress = |_: u64, _: u64| {};
+
+    if need_ytdlp {
+        match components::install_ytdlp(db, data_dir, &client, None, &progress).await {
+            Ok(status) => log_info!(
+                "[components] auto-installed yt-dlp {} at {}",
+                status.version,
+                status.path
+            ),
+            Err(error) => log_info!("[components] yt-dlp auto-install failed: {error}"),
+        }
+    }
+
+    if need_ffmpeg {
+        match components::install_ffmpeg(db, data_dir, &client, None, &progress).await {
+            Ok(status) => log_info!(
+                "[components] auto-installed ffmpeg {} at {}",
+                status.version,
+                status.path
+            ),
+            Err(error) => log_info!("[components] ffmpeg auto-install failed: {error}"),
+        }
+    }
+}
+
 /// [`Engine::new`] 的配置聚合。字段来源于现有 `DownloadManagerConfig`(平移)
 /// + `data_dir_override`(新增,接 [`data_dir::resolve_data_dir`])。
 ///
@@ -290,6 +390,21 @@ impl Engine {
         #[cfg(feature = "plugins")]
         {
             let (proxy_cfg, plugin_sink, max_conc, data_dir_p) = plugin_ctx;
+            #[cfg(all(feature = "components", target_os = "windows"))]
+            if let Err(error) = ensure_bundled_ytdlp(&data_dir_p).await {
+                log_info!("[components] bundled yt-dlp extraction failed: {error}");
+            }
+            #[cfg(feature = "components")]
+            {
+                // Component bootstrap may spend tens of seconds downloading yt-dlp/ffmpeg on a
+                // fresh install. Never block Engine construction here: daemon startup must reach
+                // bearer creation/listen quickly enough for the agent supervisor handshake.
+                let component_db = db.clone();
+                let component_data_dir = data_dir_p.clone();
+                tokio::spawn(async move {
+                    ensure_youtube_components(&component_db, &component_data_dir).await;
+                });
+            }
             let retry_tx = manager.plugin_retry_sender();
             let bridge: Arc<dyn plugin::PluginBridge> = Arc::new(
                 plugin::bridge::EngineBridge::new(
@@ -312,6 +427,9 @@ impl Engine {
                 .unwrap_or_default();
             let plugins_root = data_dir_p.join("plugins");
             let _ = tokio::fs::create_dir_all(&plugins_root).await;
+            if let Err(error) = ensure_builtin_ytdlp_plugin(&plugins_root).await {
+                log_info!("[plugin] failed to install built-in YouTube resolver: {error}");
+            }
             let pm = Arc::new(plugin::PluginManager::new(
                 runtime,
                 bridge,

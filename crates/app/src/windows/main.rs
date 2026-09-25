@@ -47,6 +47,9 @@ pub fn open(cx: &mut App) -> Option<WindowHandle<Root>> {
     ));
 
     WindowRegistry::open_or_focus(cx, WindowKey::Main, options, move |window, cx| {
+        // Keep the native HWND discoverable by Windows task switching, accessibility tools and
+        // automation even though the custom client-side titlebar intentionally renders no text.
+        window.set_window_title("FluxDown");
         let downloads_port = Arc::new(AgentDownloadsPort::new(client.clone()));
         let downloads =
             cx.new(|cx| DownloadView::new(translator.clone(), downloads_port, window, cx));

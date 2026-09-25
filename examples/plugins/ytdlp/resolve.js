@@ -74,6 +74,161 @@ var PLAYER_CLIENTS = 'default,tv,android_vr,ios,web_safari';
 var VARIANT_HEIGHT_TIERS = [2160, 1440, 1080, 720, 480];
 // variants 数组条数上限（引擎侧硬上限 50，这里按 UI 可用性收紧）。
 var MAX_VARIANTS = 10;
+var INSTAGRAM_REELS_INITIAL_DOC_ID = '29628758406714645';
+var INSTAGRAM_REELS_MORE_DOC_ID = '28647575511547745';
+var INSTAGRAM_REELS_PAGE_SIZE = 12;
+var INSTAGRAM_REELS_MAX_ITEMS = 1000;
+
+function instagramReelsUsername(url) {
+  var m = /^https?:\/\/(?:www\.)?instagram\.com\/([^/?#]+)\/reels\/?(?:[?#].*)?$/i.exec(url || '');
+  return m ? m[1] : '';
+}
+
+function parseInstagramResolverItem(token) {
+  var m = /^ig-reel\|([^|]+)\|([A-Za-z0-9_-]+)$/.exec(token || '');
+  return m ? { username: m[1], code: m[2] } : null;
+}
+
+function instagramHeaderCookie(raw) {
+  raw = (raw || '').trim();
+  if (!raw || raw.indexOf('\t') >= 0 || raw.indexOf('# Netscape HTTP Cookie File') >= 0) return '';
+  return raw;
+}
+
+function encodeForm(fields) {
+  var out = [];
+  for (var k in fields) {
+    if (Object.prototype.hasOwnProperty.call(fields, k)) {
+      out.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(fields[k])));
+    }
+  }
+  return out.join('&');
+}
+
+function parseInstagramJson(body) {
+  var text = (body || '').trim();
+  if (text.indexOf('for (;;);') === 0) text = text.slice(9);
+  return JSON.parse(text);
+}
+
+async function instagramFetchReelsManifest(pageUrl, username) {
+  var pageHeaders = { 'User-Agent': 'Mozilla/5.0' };
+  var cookie = instagramHeaderCookie(flux.settings.cookiesInstagram);
+  if (cookie) pageHeaders.Cookie = cookie;
+
+  var page = await flux.fetch({ method: 'GET', url: pageUrl, headers: pageHeaders });
+  if (!page || page.status < 200 || page.status >= 400) {
+    throw new Error('Instagram Reels 页面读取失败: HTTP ' + (page ? page.status : 0));
+  }
+  var html = page.body || '';
+  var idMatch = /profilePage_(\d+)/.exec(html);
+  var lsdMatch = /\[\\?"LSD\\?",\[\],\{\\?"token\\?":\\?"([^"\\]+)\\?"/.exec(html);
+  if (!idMatch || !lsdMatch) {
+    throw new Error('Instagram Reels 页面未找到 profile_id/LSD；账号可能为私密、需要登录或页面结构已更新');
+  }
+
+  var userId = idMatch[1];
+  var lsd = lsdMatch[1];
+  var commonHeaders = {
+    'User-Agent': 'Mozilla/5.0',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Referer': pageUrl,
+    'X-FB-LSD': lsd,
+    'X-IG-App-ID': '936619743392459',
+  };
+  if (cookie) commonHeaders.Cookie = cookie;
+
+  async function query(docId, friendlyName, variables) {
+    var headers = {};
+    for (var hk in commonHeaders) headers[hk] = commonHeaders[hk];
+    headers['X-FB-Friendly-Name'] = friendlyName;
+    var body = encodeForm({
+      av: '0',
+      __d: 'www',
+      __user: '0',
+      __a: '1',
+      __req: '1',
+      dpr: '1',
+      __comet_req: '7',
+      lsd: lsd,
+      fb_api_caller_class: 'RelayModern',
+      fb_api_req_friendly_name: friendlyName,
+      server_timestamps: 'true',
+      variables: JSON.stringify(variables),
+      doc_id: docId,
+    });
+    var response = await flux.fetch({
+      method: 'POST',
+      url: 'https://www.instagram.com/graphql/query',
+      headers: headers,
+      body: body,
+    });
+    if (!response || response.status < 200 || response.status >= 400) {
+      throw new Error('Instagram Reels GraphQL 失败: HTTP ' + (response ? response.status : 0));
+    }
+    var json = parseInstagramJson(response.body);
+    if (json.error || json.errors) {
+      throw new Error('Instagram Reels GraphQL 返回错误');
+    }
+    var root = json && json.data && json.data.fetch__XDTUserDict;
+    var connection = root && root.clips_connection;
+    if (!connection || !Array.isArray(connection.edges)) {
+      throw new Error('Instagram Reels GraphQL 返回结构已变化');
+    }
+    return connection;
+  }
+
+  var data = {
+    include_feed_video: true,
+    page_size: INSTAGRAM_REELS_PAGE_SIZE,
+    target_user_id: userId,
+  };
+  var first = await query(INSTAGRAM_REELS_INITIAL_DOC_ID, 'PolarisProfileReelsTabContentQuery', {
+    data: data,
+    user_id: userId,
+    __relay_internal__pv__PolarisShortDramaEnabledrelayprovider: false,
+  });
+
+  var items = [];
+  var seen = {};
+  function append(connection) {
+    for (var i = 0; i < connection.edges.length && items.length < INSTAGRAM_REELS_MAX_ITEMS; i++) {
+      var media = connection.edges[i] && connection.edges[i].node && connection.edges[i].node.media;
+      var code = media && media.code;
+      if (!code || seen[code]) continue;
+      seen[code] = true;
+      items.push({
+        id: 'ig-reel|' + username + '|' + code,
+        name: username + '_' + String(items.length + 1).padStart(4, '0') + '_' + code + '.mp4',
+        path: '',
+      });
+    }
+  }
+
+  append(first);
+  var pageInfo = first.page_info || {};
+  var cursor = pageInfo.end_cursor || '';
+  while (pageInfo.has_next_page && cursor && items.length < INSTAGRAM_REELS_MAX_ITEMS) {
+    var next = await query(INSTAGRAM_REELS_MORE_DOC_ID, 'PolarisProfileReelsTabContentQuery_connection', {
+      after: cursor,
+      data: data,
+      first: INSTAGRAM_REELS_PAGE_SIZE,
+      id: userId,
+      __relay_internal__pv__PolarisShortDramaEnabledrelayprovider: false,
+    });
+    append(next);
+    pageInfo = next.page_info || {};
+    if (!pageInfo.end_cursor || pageInfo.end_cursor === cursor) break;
+    cursor = pageInfo.end_cursor;
+  }
+
+  if (!items.length) throw new Error('Instagram Reels 列表为空或当前账号不可访问');
+  if (items.length >= INSTAGRAM_REELS_MAX_ITEMS) {
+    flux.logger.warn('[instagram] Reels 数量达到清单上限 ' + INSTAGRAM_REELS_MAX_ITEMS + '，其余项目未展开');
+  }
+  flux.logger.info('[instagram] ' + username + ' Reels 清单: ' + items.length + ' 项');
+  return { manifest: { name: username + ' Instagram Reels', items: items } };
+}
 
 // Windows/Unix 通用的文件名净化。
 function sanitizeFileName(name) {
@@ -102,18 +257,30 @@ function cookieDomainFromUrl(url) {
   return '.' + host;
 }
 
-// yt-dlp 格式选择器：始终取「最佳画质」作为顶层默认档（画质由用户在下载时经
-// variants 弹框选择，不在设置里固定）。preferMp4 仅影响容器偏好（H.264/AAC mp4
-// 优先 vs 允许 VP9 WebM），不限制画质。免打扰/headless 无弹框时即用此最佳档。
-function buildFormat(preferMp4) {
+// yt-dlp 顶层默认档优先取「已混流（同时含视频+音频）」格式，确保全新安装即使
+// ffmpeg 尚在后台安装也能直接得到单一可播放文件。高画质分离轨仍会从
+// info.formats 进入 variants 弹框，用户可主动选择；ffmpeg 可用后会正常 mux。
+// preferMp4 仅控制已混流默认档的容器偏好。
+function buildFormat(preferMp4, platformId) {
+  // Facebook exposes progressive `hd` / `sd` aliases whose codec metadata is often `unknown`.
+  // Generic codec predicates would skip them and fall through to DASH video+audio, forcing an
+  // ffmpeg mux. Prefer the progressive aliases for the default Facebook/Reels path so a clean
+  // install produces one playable MP4 even before ffmpeg has finished installing.
+  if (platformId === 'facebook') return 'hd/sd/best';
   if (preferMp4) {
     return (
+      'best[ext=mp4][vcodec!=none][acodec!=none]/' +
+      'best[vcodec!=none][acodec!=none]/' +
       'bestvideo[ext=mp4]+bestaudio[ext=m4a]/' +
       'bestvideo+bestaudio/' +
       'best'
     );
   }
-  return 'bestvideo+bestaudio/best';
+  return (
+    'best[vcodec!=none][acodec!=none]/' +
+    'bestvideo+bestaudio/' +
+    'best'
+  );
 }
 
 // 解析「附加 yt-dlp 参数」设置项为 argv 数组：空格分隔，支持单/双引号包裹含空格
@@ -348,6 +515,8 @@ function fnv1a(s) {
 // （按后缀匹配）。与 manifest 的 match.urls 白名单保持一致。
 var PLATFORMS = [
   { id: 'youtube', hosts: ['youtube.com', 'youtu.be'], cookieKey: 'cookiesYoutube' },
+  { id: 'facebook', hosts: ['facebook.com', 'fb.watch'], cookieKey: 'cookiesFacebook' },
+  { id: 'instagram', hosts: ['instagram.com'], cookieKey: 'cookiesInstagram' },
   { id: 'bilibili', hosts: ['bilibili.com', 'b23.tv'], cookieKey: 'cookiesBilibili' },
   { id: 'niconico', hosts: ['nicovideo.jp', 'nico.ms'], cookieKey: 'cookiesNiconico' },
   { id: 'twitch', hosts: ['twitch.tv'], cookieKey: 'cookiesTwitch' },
@@ -450,6 +619,16 @@ function friendlyError(url, r, cookiesUsed) {
 globalThis.resolve = async (ctx) => {
   var verbose = flux.settings.verbose;
 
+  var collectionUser = !ctx.resolverItem ? instagramReelsUsername(ctx.url) : '';
+  if (collectionUser) {
+    return await instagramFetchReelsManifest(ctx.url, collectionUser);
+  }
+
+  var resolverItem = parseInstagramResolverItem(ctx.resolverItem);
+  var effectiveUrl = resolverItem
+    ? 'https://www.instagram.com/' + resolverItem.username + '/reel/' + resolverItem.code + '/'
+    : ctx.url;
+
   if (!flux.ytdlp) {
     throw new Error('flux.ytdlp 门面不可用（manifest 需声明 permissions:["ytdlp"]）');
   }
@@ -458,12 +637,15 @@ globalThis.resolve = async (ctx) => {
     throw new Error('yt-dlp 未安装或不可用，请在 App「组件」页安装 yt-dlp 组件');
   }
 
-  var platform = detectPlatform(ctx.url);
+  var platform = detectPlatform(effectiveUrl);
   if (!platform) {
-    throw new Error('该链接不在本插件支持的平台白名单内（仅 YouTube / Bilibili / Niconico / Twitch / Vimeo / Dailymotion / SoundCloud / AcFun）: ' + ctx.url);
+    throw new Error('该链接不在本插件支持的平台白名单内（仅 YouTube / Facebook / Instagram / Bilibili / Niconico / Twitch / Vimeo / Dailymotion / SoundCloud / AcFun）: ' + effectiveUrl);
   }
-  var fmt = buildFormat(flux.settings.preferMp4);
-  var ck = await buildCookieContext(ctx, platform);
+  var fmt = buildFormat(flux.settings.preferMp4, platform.id);
+  var resolveCtx = {};
+  for (var ckKey in ctx) resolveCtx[ckKey] = ctx[ckKey];
+  resolveCtx.url = effectiveUrl;
+  var ck = await buildCookieContext(resolveCtx, platform);
   var cookiesText = ck.text;
   var args = [
     '-J',
@@ -498,7 +680,7 @@ globalThis.resolve = async (ctx) => {
   // 附加参数（高级）：追加到命令末尾（URL 之前）。FluxDown bridge 二次拦截危险开关。
   var extra = parseExtraArgs(flux.settings.extraArgs);
   for (var ei = 0; ei < extra.length; ei++) args.push(extra[ei]);
-  args.push(ctx.url);
+  args.push(effectiveUrl);
 
   if (verbose) {
     flux.logger.info(
@@ -506,7 +688,7 @@ globalThis.resolve = async (ctx) => {
       pItem ? 'item=' + pItem : 'no-playlist',
       extra.length ? 'extra=' + extra.length : 'no-extra',
       cookiesText ? 'with-cookies' : 'no-cookies',
-      ctx.url
+      effectiveUrl
     );
   }
 
@@ -538,7 +720,7 @@ globalThis.resolve = async (ctx) => {
     }
   }
 
-  if (r.timedOut) throw new Error('yt-dlp 解析超时（40s）: ' + ctx.url);
+  if (r.timedOut) throw new Error('yt-dlp 解析超时（40s）: ' + effectiveUrl);
 
   // 关键：yt-dlp 遇 bot 风控时退出码可能为 0 但 stdout 输出 "null"/空。
   // 不能只看 r.code——须校验 stdout 为合法非空对象，否则给出友好错误。
@@ -580,7 +762,12 @@ globalThis.resolve = async (ctx) => {
   }
 
   var title = info.title || info.id || 'video';
-  var base = sanitizeFileName(title);
+  // Batch-expanded Instagram Reels often all have the same generic title (e.g. "Video by X").
+  // Append the shortcode so every child has a stable, collision-free filename instead of relying
+  // on the filesystem's "(1)", "(2)" duplicate-name suffixes.
+  var base = sanitizeFileName(
+    resolverItem ? title + ' [' + resolverItem.code + ']' : title
+  );
   var preferMp4 = flux.settings.preferMp4;
   var reqs = Array.isArray(info.requested_formats) ? info.requested_formats : null;
 

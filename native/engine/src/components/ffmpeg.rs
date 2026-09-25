@@ -320,35 +320,40 @@ mod install {
     ) -> Result<FfmpegStatus, ComponentError> {
         let plat = platform_tag().ok_or(ComponentError::Unsupported)?;
         let mirror_base = super::super::component_mirror_base(db).await;
-        // latest release 端点与 list_versions 相同，复用同一条镜像优先链路
-        // （官网镜像 → 用户配置镜像 → 直连 GitHub），675#1 无需额外维护第二套回退。
-        let release =
-            super::super::fetch_versions_json(client, "ffmpeg", RELEASE_API, &mirror_base).await?;
-        let empty = Vec::new();
-        let assets = release["assets"].as_array().unwrap_or(&empty);
-
-        // 选定资产：钉住版本或最新稳定版。
-        let mut candidates: Vec<(String, &str)> = assets
-            .iter()
-            .filter_map(|a| {
-                let name = a["name"].as_str()?;
-                let url = a["browser_download_url"].as_str()?;
-                let ver = parse_asset_version(name, plat)?;
-                Some((ver, url))
-            })
-            .collect();
-        candidates.sort_by_key(|(v, _)| std::cmp::Reverse(version_key(v)));
-        let (chosen_ver, url) = match version {
-            Some(want) => candidates
+        // 自动安装（version=None）不需要先请求 GitHub API：BtbN 的 `latest` tag
+        // 永远提供 master-latest 固定资产名。这样首次启动即使 api.github.com 被
+        // 限流/代理截断，仍能直接取得 ffmpeg。手动钉版本仍沿用 Release JSON，
+        // 保持设置页的版本选择语义不变。
+        let (chosen_ver, url) = if let Some(want) = version {
+            let release =
+                super::super::fetch_versions_json(client, "ffmpeg", RELEASE_API, &mirror_base)
+                    .await?;
+            let empty = Vec::new();
+            let assets = release["assets"].as_array().unwrap_or(&empty);
+            let mut candidates: Vec<(String, &str)> = assets
+                .iter()
+                .filter_map(|a| {
+                    let name = a["name"].as_str()?;
+                    let url = a["browser_download_url"].as_str()?;
+                    let ver = parse_asset_version(name, plat)?;
+                    Some((ver, url))
+                })
+                .collect();
+            candidates.sort_by_key(|(v, _)| std::cmp::Reverse(version_key(v)));
+            let (ver, url) = candidates
                 .iter()
                 .find(|(v, _)| v == want)
-                .ok_or_else(|| ComponentError::NotFound(format!("version {want} ({plat})")))?,
-            None => candidates
-                .first()
-                .ok_or_else(|| ComponentError::NotFound(format!("no builds for {plat}")))?,
+                .ok_or_else(|| ComponentError::NotFound(format!("version {want} ({plat})")))?;
+            (ver.clone(), (*url).to_string())
+        } else {
+            let ext = if cfg!(windows) { "zip" } else { "tar.xz" };
+            (
+                "master".to_string(),
+                format!(
+                    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-{plat}-gpl.{ext}"
+                ),
+            )
         };
-        let chosen_ver = chosen_ver.clone();
-        let url = url.to_string();
 
         // 流式下载到 bin/ 下的临时文件。
         let bin_dir = data_dir.join("bin");

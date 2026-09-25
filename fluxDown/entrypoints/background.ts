@@ -57,6 +57,7 @@ import {
   matchSniffRule,
   classifyResource,
   extractFilenameFromUrl,
+  isExplicitStreamManifestUrl,
   normalizeUrlForDedup,
 } from "@/utils/resource-types";
 import type { ResourceMessagePayload } from "@/utils/resource-types";
@@ -684,6 +685,29 @@ export default defineBackground(() => {
   function onBeforeRequestHandler(
     details: chrome.webRequest.WebRequestBodyDetails,
   ): chrome.webRequest.BlockingResponse | undefined {
+    // Manifest-first fallback: some players/service workers hide or rewrite response metadata,
+    // but an explicit .m3u8/.mpd request is already a strong enough signal to surface it.
+    // onHeadersReceived later merges MIME/size/auth metadata into the same normalized resource.
+    if (
+      details.tabId >= 0 &&
+      !(_settingsCache && !_settingsCache.resourceSniffing) &&
+      isExplicitStreamManifestUrl(details.url)
+    ) {
+      const added = addResources(details.tabId, "", [
+        {
+          url: details.url,
+          type: "stream",
+          filename: extractFilenameFromUrl(details.url),
+          detectedBy: "webRequest",
+        },
+      ]);
+      if (added > 0) {
+        bumpTabVersion(tabResourceVersions, details.tabId);
+        void updateDisplayedBadgeForTab(details.tabId);
+        void notifyContentScript(details.tabId);
+      }
+    }
+
     if (!shouldCaptureRequest(details)) {
       // 无 body 的 GET 是该 URL 的最新真实事务——清除同 URL 的陈旧非 GET
       // 记录（如先前的 CORS 预检 OPTIONS 或已过期的 form POST），确保

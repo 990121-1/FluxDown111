@@ -90,6 +90,9 @@ fn cookies_for_url<'a>(playlist_url: &str, target_url: &str, cookies: &'a str) -
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+const MAX_PLAYLIST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_KEY_BYTES: usize = 64 * 1024;
+const MAX_SEGMENT_BYTES: usize = 256 * 1024 * 1024;
 
 /// Upper bound on concurrent segment downloads.
 ///
@@ -275,7 +278,24 @@ pub async fn parse_m3u8(
     // 应用浏览器扩展捕获的额外请求头
     req = crate::downloader::apply_extra_headers(req, extra_headers);
 
-    let resp = req.send().await?.error_for_status()?;
+    let resp = req.send().await?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        log_info!(
+            "[hls-download] playlist rejected reqwest with 403; trying Windows curl transport: {}",
+            url
+        );
+        let fallback = crate::downloader::curl_get_bytes_fallback(
+            url,
+            cookies,
+            extra_headers,
+            None,
+            None,
+            MAX_PLAYLIST_BYTES,
+        )
+        .await?;
+        return parse_m3u8_bytes(&fallback.effective_url, &fallback.bytes);
+    }
+    let resp = resp.error_for_status()?;
     // 相对 URI 必须以"最终检索到的资源 URL"为 base 解析(RFC 3986 §5.1)。
     // reqwest 默认跟随重定向(见 downloader.rs),播放列表被负载均衡/短链
     // 重定向时,请求 url 与实际返回内容的 URL 不同;若仍用请求前的 url 作
@@ -506,8 +526,25 @@ async fn fetch_key(
     // 应用浏览器扩展捕获的额外请求头
     req = crate::downloader::apply_extra_headers(req, extra_headers);
 
-    let resp = req.send().await?.error_for_status()?;
-    let key_bytes = resp.bytes().await?.to_vec();
+    let resp = req.send().await?;
+    let key_bytes = if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        log_info!(
+            "[hls-download] AES key rejected reqwest with 403; trying Windows curl transport: {}",
+            key_uri
+        );
+        crate::downloader::curl_get_bytes_fallback(
+            key_uri,
+            safe_cookies,
+            extra_headers,
+            None,
+            None,
+            MAX_KEY_BYTES,
+        )
+        .await?
+        .bytes
+    } else {
+        resp.error_for_status()?.bytes().await?.to_vec()
+    };
 
     if key_bytes.len() != 16 {
         return Err(DownloadError::Other(format!(
@@ -2019,8 +2056,27 @@ async fn download_segment_once(
 
     let resp = tokio::select! {
         _ = transport.cancel_token.cancelled() => return Err(DownloadError::Cancelled),
-        r = req.send() => r?.error_for_status()?,
+        r = req.send() => r?,
     };
+
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        log_info!(
+            "[hls-download] segment {} rejected reqwest with 403; trying Windows curl transport",
+            seg_idx
+        );
+        let _transfer = transport.tracker.start(seg_idx as i32);
+        return Ok(crate::downloader::curl_get_bytes_fallback(
+            url,
+            safe_cookies,
+            transport.extra_headers,
+            byte_range,
+            Some(transport.cancel_token),
+            MAX_SEGMENT_BYTES,
+        )
+        .await?
+        .bytes);
+    }
+    let resp = resp.error_for_status()?;
 
     // ranged 请求(EXT-X-BYTERANGE)必须得到 206 Partial Content。若服务器忽略
     // Range 头返回 200 全量,则收到的是整个底层文件而非本段子区间;放行会把
@@ -2064,10 +2120,6 @@ async fn download_segment_once(
     };
     let raw_stream = resp.bytes_stream();
     let mut stream = crate::downloader::maybe_decompress_stream(raw_stream, encoding);
-
-    /// Maximum allowed size for a single HLS segment (256 MB).
-    /// Prevents OOM if a malicious or misconfigured server sends an oversized segment.
-    const MAX_SEGMENT_BYTES: usize = 256 * 1024 * 1024;
 
     let mut buf = Vec::new();
     loop {
