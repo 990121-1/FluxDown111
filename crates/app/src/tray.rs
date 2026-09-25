@@ -30,7 +30,9 @@ mod imp {
     use std::time::Duration;
 
     use fluxdown_protocol::method;
-    use gpui::{App, Global, WindowAppearance};
+    use gpui::{
+        AnyWindowHandle, App, AppContext as _, EmptyView, Global, WindowAppearance, WindowOptions,
+    };
     use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
     use tray_icon::{Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -63,6 +65,9 @@ mod imp {
     struct TrayState {
         icon: TrayIcon,
         ids: TrayIds,
+        /// 隐藏的 GPUI 常驻窗口。主窗口真正关闭后仍保留一个 `show:false` 窗口，
+        /// 让 Windows 事件循环继续运行；它不会出现在任务栏，只由托盘唤回主窗口。
+        _resident_window: AnyWindowHandle,
         /// Windows 深/浅色两套图标（(dark, light)）；macOS 恒为 `None`（模板图标自适配）。
         windows_icons: Option<(Icon, Icon)>,
         appearance: Cell<WindowAppearance>,
@@ -148,9 +153,25 @@ mod imp {
             return;
         };
 
+        let resident_window = match cx.open_window(
+            WindowOptions {
+                show: false,
+                focus: false,
+                titlebar: None,
+                is_resizable: false,
+                is_minimizable: false,
+                ..WindowOptions::default()
+            },
+            |_window, cx| cx.new(|_| EmptyView),
+        ) {
+            Ok(handle) => AnyWindowHandle::from(handle),
+            Err(_) => return,
+        };
+
         cx.set_global(TrayState {
             icon,
             ids,
+            _resident_window: resident_window,
             windows_icons,
             appearance: Cell::new(appearance),
         });

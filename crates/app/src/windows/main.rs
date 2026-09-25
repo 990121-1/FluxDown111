@@ -176,13 +176,13 @@ fn install_close_policy(window: &mut Window, cx: &mut App) {
     window.on_window_should_close(cx, should_close);
 }
 
-/// 主窗口原生关闭按钮在 Windows / macOS 上等价于“最小化到后台”：不移除最后一个
-/// GPUI 窗口，避免 GUI 进程随最后窗口关闭而被框架一并结束。真正退出统一由托盘 / 菜单
-/// “退出”处理，并同时终止 agent / daemon / NMH。
+/// 主窗口原生关闭按钮在托盘已安装时真正关闭主窗口，只保留后台驻留与系统托盘图标。
+/// [`WindowRegistry`] 的 resident 状态负责保证 0 个用户窗口时进程仍继续运行；托盘点击
+/// “显示窗口”会重新创建主窗口。真正退出统一由托盘 / 菜单“退出”处理，并同时终止
+/// agent / daemon / NMH。
 pub fn should_close(window: &mut Window, cx: &mut App) -> bool {
-    if cfg!(any(windows, target_os = "macos")) {
-        window.minimize_window();
-        return false;
+    if WindowRegistry::is_resident(cx) {
+        return true;
     }
     if Desktop::active_task_count(cx) == 0 || WindowRegistry::open_count(cx) > 1 {
         return true;
