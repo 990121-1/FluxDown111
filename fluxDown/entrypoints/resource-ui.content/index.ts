@@ -14,7 +14,13 @@ import { browser } from 'wxt/browser';
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { createShadowRootUi } from 'wxt/utils/content-script-ui/shadow-root';
 import type { DetectedResource, ResourceType, ConfidenceLevel, TrackPairGroup } from '@/utils/resource-types';
-import { formatFileSize, groupTrackPairs, normalizeUrlForDedup } from '@/utils/resource-types';
+import {
+  extractExtension,
+  formatFileSize,
+  groupTrackPairs,
+  isExplicitStreamManifestUrl,
+  normalizeUrlForDedup,
+} from '@/utils/resource-types';
 import type { DashManifest } from '@/utils/dash-manifest';
 import { detectTrackKind } from '@/utils/track-detector';
 import type { DashManifestEntry, MediaCandidate, MediaCandidateVariant } from '@/utils/media-candidates';
@@ -938,6 +944,34 @@ export default defineContentScript({
       return latest;
     }
 
+    function rowCompletenessPriority(row: ContentResourceRow): number {
+      const url = rowUrl(row);
+      const ext = extractExtension(url);
+
+      // HLS / DASH 清单与完整文件才是“用户想下载的媒体”。TS/M4S 即使刚刚
+      // 收到、甚至服务器带 filename，也只是播放器分片，永远不能盖过清单。
+      if (isContentMediaCandidate(row.item)) {
+        if (row.item.source === 'hls' || row.item.source === 'dash') return 400;
+        if (row.item.source === 'fragments' || ext === 'ts' || ext === 'm4s') return 0;
+        if (row.item.source === 'direct') return 400;
+      }
+
+      if (!isContentMediaCandidate(row.item) && isResolverPageResource(row.item)) return 500;
+      if (isExplicitStreamManifestUrl(url)) return 400;
+      if (ext === 'ts' || ext === 'm4s') return 0;
+      if (row.item.type === 'stream') return 350;
+      if (row.item.type === 'video') return 400;
+      return 100;
+    }
+
+    function bestCompleteMediaRow(rows: ContentResourceRow[]): ContentResourceRow | undefined {
+      return [...rows].sort((a, b) => {
+        const priority = rowCompletenessPriority(b) - rowCompletenessPriority(a);
+        if (priority !== 0) return priority;
+        return rowLatestDetectedAt(b) - rowLatestDetectedAt(a);
+      })[0];
+    }
+
     function isProfileReelsResolver(resource: DetectedResource): boolean {
       if (!isResolverPageResource(resource)) return false;
       try {
@@ -978,18 +1012,22 @@ export default defineContentScript({
 
       const active = activePlaybackVideo();
       const activeUrl = normalizedMediaUrl(active?.currentSrc || active?.src);
+      const best = bestCompleteMediaRow(rows);
       if (activeUrl) {
         const exact = rows.find((row) => normalizedMediaUrl(rowUrl(row)) === activeUrl);
-        if (exact) return exact;
+        if (
+          exact &&
+          (!best || rowCompletenessPriority(exact) >= rowCompletenessPriority(best))
+        ) return exact;
       }
 
-      // MSE/blob 无法直接把 <video> 与 CDN URL 一一对应；当前播放中的媒体会持续
-      // 产生请求，因此用该 tab 最近检测到的完整 candidate 作为通用 fallback。
+      // MSE/blob 无法直接把 <video> 与 CDN URL 一一对应。先选完整性最高的候选，
+      // 再在同等级内按最近检测时间排序；不能让持续流入的 .ts/.m4s 抢走主位置。
       if (active && !active.paused && !active.ended) {
-        return [...rows].sort((a, b) => rowLatestDetectedAt(b) - rowLatestDetectedAt(a))[0];
+        return best;
       }
 
-      return rows[0];
+      return best || rows[0];
     }
 
     function primaryRowLabel(row: ContentResourceRow): string {

@@ -69,14 +69,13 @@ impl AgentClient {
         );
         let (commands, command_rx) = mpsc::channel(64);
         let (events, event_rx) = mpsc::channel(1024);
-        // Desktop 首次启动时 bearer/token 可能尚不存在，不能只等第一次 connect
-        // 失败后才被动拉起 agent。先主动确保同级 fluxdown-agent 正在运行，再进入
-        // 正常连接/重连循环；ensure_running 自带端口探测和单飞锁，与后续重试并发安全。
+        // Desktop 首次启动时 bearer/token 可能尚不存在。启动阶段同步完成一次本机
+        // bootstrap，保证 GUI 出现前已至少尝试拉起同级 fluxdown-agent；不能把首次
+        // 启动只丢给后台 task，否则某些 GPUI/Windows 启动时序下 task 尚未调度，
+        // GUI 已可用但 agent/daemon 仍未运行。后续断线仍由 run_client 异步重试。
         let rpc_url = config.rpc_url.clone();
-        runtime.spawn(async move {
-            let _ = bootstrap.ensure_running(&rpc_url).await;
-            run_client(config, bootstrap, command_rx, events).await;
-        });
+        let _ = runtime.block_on(bootstrap.ensure_running(&rpc_url));
+        runtime.spawn(run_client(config, bootstrap, command_rx, events));
         Ok((Arc::new(Self { commands, runtime }), event_rx))
     }
 

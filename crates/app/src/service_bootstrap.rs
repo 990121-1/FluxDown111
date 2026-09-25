@@ -110,9 +110,11 @@ async fn agent_is_listening(rpc_url: &str) -> Result<bool, BootstrapError> {
             Ok(false)
         }
         Ok(Err(error)) => Err(BootstrapError::Probe(error.to_string())),
-        Err(_) => Err(BootstrapError::Probe(
-            "agent listener probe timed out".to_owned(),
-        )),
+        // Windows 上即使目标是 127.0.0.1，端口没有监听者时也可能被本机安全软件/
+        // WFP 规则静默丢包，表现为 connect timeout 而不是 ConnectionRefused。这里的
+        // probe 目的只是“避免重复拉起”，超时应按“未监听”处理，让 Desktop 继续
+        // 启动同级 agent；否则会在真正 spawn 之前永久短路。
+        Err(_) => Ok(false),
     }
 }
 
