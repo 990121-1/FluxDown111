@@ -161,8 +161,20 @@ function Open-ExtensionPage {
 
 if ($env:OS -ne "Windows_NT") { throw "This installer is for Windows only." }
 
-$RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $RepoRoot
+if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    throw @"
+This installer must be run as a .ps1 file. Do NOT paste the script line-by-line into PowerShell.
+
+Correct usage after cloning:
+  cd F:\AI\COS\FluxDown111
+  powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
+
+Or simply double-click INSTALL.cmd in the repository root.
+"@
+}
+
+$RepoRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
+Set-Location -LiteralPath $RepoRoot
 
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "Cargo.toml"))) { throw "Cargo.toml not found. Run this script from a cloned FluxDown111 repository." }
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "fluxDown\package.json"))) { throw "fluxDown/package.json not found. Repository checkout is incomplete." }
