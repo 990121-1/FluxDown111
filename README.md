@@ -53,13 +53,17 @@ fluxdown-desktop.exe
 
 ## 全新 Clone 後一鍵建置 / 安裝
 
-在 Windows 上，Clone 完只要執行根目錄的 `install-windows.ps1`：
+在 Windows 上，Clone 完後最簡單的方式是直接**雙擊 Repo 根目錄的 `INSTALL.cmd`**。
+
+也可以在 PowerShell 執行：
 
 ```powershell
 git clone https://github.com/990121-1/FluxDown111.git
 cd FluxDown111
 powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
 ```
+
+> 不要把 `install-windows.ps1` 的內容整段貼進 PowerShell 視窗逐行執行。它必須以 `.ps1` 檔案方式執行，否則腳本無法取得 Repo 路徑。
 
 腳本會自動：
 
