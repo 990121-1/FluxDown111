@@ -51,7 +51,50 @@ fluxdown-desktop.exe
 | `examples/plugins/ytdlp` | 內建 yt-dlp resolver |
 | `assets` | 圖示、字型、受管元件 |
 
-## Windows 建置
+## 全新 Clone 後一鍵建置 / 安裝
+
+在 Windows 上，Clone 完只要執行根目錄的 `install-windows.ps1`：
+
+```powershell
+git clone https://github.com/990121-1/FluxDown111.git
+cd FluxDown111
+powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
+```
+
+腳本會自動：
+
+- 檢查 Rust、Node.js/npm 與 MSVC C++ Build Tools。
+- 缺少 Rust / Node / MSVC 時，透過 `winget` 嘗試安裝。
+- 建置 `fluxdown-desktop.exe`、`fluxdown-agent.exe`、`fluxdownd.exe`、`fluxdown_nmh.exe`。
+- 建置 Chrome / Edge MV3 擴充套件。
+- 安裝到 `%LOCALAPPDATA%\Programs\FluxDown`。
+- 建立桌面與開始功能表捷徑。
+- 啟動 FluxDown，讓 Agent 自動註冊 Native Messaging Host。
+- 開啟瀏覽器擴充管理頁，並把擴充資料夾路徑複製到剪貼簿。
+
+Chrome / Edge 對「未封裝擴充套件」不允許一般程式靜默側載，因此最後仍需在瀏覽器按一次「載入未封裝項目」，選擇：
+
+```text
+%LOCALAPPDATA%\Programs\FluxDown\extension
+```
+
+常用參數：
+
+```powershell
+# 同時打開 Chrome 與 Edge 擴充管理頁
+.\install-windows.ps1 -Browser Both
+
+# 重新清除編譯產物後完整建置
+.\install-windows.ps1 -Clean
+
+# 已確定環境齊全時，跳過工具檢查/安裝
+.\install-windows.ps1 -SkipPrerequisites
+
+# 只安裝，不自動啟動程式
+.\install-windows.ps1 -NoLaunch
+```
+
+## 手動建置
 
 需求：
 
@@ -61,8 +104,6 @@ fluxdown-desktop.exe
 - npm
 
 ```powershell
-git clone https://github.com/990121-1/FluxDown111.git
-cd FluxDown111
 powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
 
