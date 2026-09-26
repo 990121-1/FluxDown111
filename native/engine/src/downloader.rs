@@ -1140,7 +1140,7 @@ pub fn maybe_decompress_stream(
 /// Cloudflare-protected CDNs also work (see [`resolve_file_info`]).
 ///
 /// **Version rule（同 aria2 的 `aria2/<版本>`）**：release 构建为
-/// `FluxDown/<pubspec 版本号>`（build.rs 注入 `FLUXDOWN_APP_VERSION`），
+/// `FluxDown/<Cargo package 版本>`（build.rs 注入 `FLUXDOWN_APP_VERSION`），
 /// debug 构建固定 `FluxDown/1.0`。
 const DEFAULT_UA: &str = if cfg!(debug_assertions) {
     "FluxDown/1.0"

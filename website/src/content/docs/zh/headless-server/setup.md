@@ -6,7 +6,7 @@ order: 1
 sourceHash: "1449d3d3dd1b"
 ---
 
-`fluxdown_server` 是 FluxDown 下载引擎的 headless 版本:没有 Flutter 界面,也没有 Rinf/FFI 层。它把同一套 Rust 引擎(HTTP/HTTPS、FTP、BitTorrent、HLS、DASH)通过 HTTP、WebSocket 和一个编译进可执行文件的 Web 界面暴露出来,因此你可以把它跑在 NAS、家庭服务器或 VPS 上,在浏览器里远程管理下载。发行版就是**一个自包含的单二进制**,不用再附带 `web/` 目录。
+`fluxdown_server` 是 FluxDown 下载引擎的 headless 宿主，不会启动 GPUI 桌面客户端。它把同一套 Rust 引擎(HTTP/HTTPS、FTP、BitTorrent、HLS、DASH)通过 HTTP、WebSocket 和一个编译进可执行文件的 Web 界面暴露出来,因此你可以把它跑在 NAS、家庭服务器或 VPS 上,在浏览器里远程管理下载。发行版就是**一个自包含的单二进制**,不用再附带 `web/` 目录。
 
 多数部署场景下，预编译 Docker 镜像是最省事的方式——见 [Docker 与 NAS](/docs/zh/headless-server/docker/)。本页介绍从工作区源码用 Cargo 构建并运行，以及对两种方式都适用的配置。
 

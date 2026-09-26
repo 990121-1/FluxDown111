@@ -27,7 +27,7 @@ import { LampEffect } from "@/components/ui/lamp-effect";
 import { useLocale } from "@/lib/i18n";
 
 const techStack = [
-  { name: "Flutter", color: "text-brand-sky" },
+  { name: "GPUI", color: "text-brand-sky" },
   { name: "Rust", color: "text-[#dea584]" },
   { name: "Tokio", color: "text-brand-cyan" },
   { name: "SQLite", color: "text-success" },

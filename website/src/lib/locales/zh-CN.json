@@ -732,7 +732,7 @@
     "faq.items.3.q": "支持哪些浏览器？",
     "faq.items.3.a": "浏览器扩展支持 Chrome、Edge 及其他基于 Chromium 的浏览器，同时也支持 Firefox。扩展会自动拦截下载并发送到 FluxDown 进行加速下载。",
     "faq.items.4.q": "FluxDown 和 IDM 有什么区别？",
-    "faq.items.4.a": "FluxDown 提供类似的多线程下载加速功能，但完全免费，且使用现代技术（Rust + Flutter）构建。支持 HTTP、HTTPS、FTP、BitTorrent 及 HLS/DASH 流媒体协议，具备基于系统配置的智能分段功能，提供原生桌面体验。",
+    "faq.items.4.a": "FluxDown 提供类似的多线程下载加速功能，但完全免费，且使用现代技术（Rust + GPUI）构建。支持 HTTP、HTTPS、FTP、BitTorrent 及 HLS/DASH 流媒体协议，具备基于系统配置的智能分段功能，提供原生桌面体验。",
     "faq.items.5.q": "FluxDown 支持断点续传吗？",
     "faq.items.5.a": "支持。FluxDown 具备完整的断点续传功能。所有下载进度都持久化到本地 SQLite 数据库中。你可以安全地关闭应用或重启电脑，不会丢失任何进度。",
     "faq.items.6.q": "支持哪些操作系统？",
