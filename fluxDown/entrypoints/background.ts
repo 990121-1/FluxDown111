@@ -64,6 +64,7 @@ import {
 import type { ResourceMessagePayload } from "@/utils/resource-types";
 import { normalizeDashManifest } from "@/utils/dash-manifest";
 import type { DashManifest } from "@/utils/dash-manifest";
+import { parseHlsManifest } from "@/utils/hls-manifest";
 import {
   buildMediaCandidates,
   countMediaCandidateRows,
@@ -73,6 +74,7 @@ import {
   addSniffedResource,
   getResourcesForTab,
   clearResourcesForTab,
+  annotateHlsManifest,
   updateBadgeForTab,
   initTabLifecycleListeners,
 } from "@/utils/resource-store";
@@ -898,6 +900,69 @@ export default defineBackground(() => {
     return { cookies, headers };
   }
 
+  // ===== HLS master/media relationship probe =====
+  const HLS_PROBE_MAX_BYTES = 2 * 1024 * 1024;
+  const hlsProbeInFlight = new Set<string>();
+
+  function isHlsManifestCandidate(url: string, contentType: string): boolean {
+    const lowerUrl = url.toLowerCase();
+    const mime = contentType.toLowerCase();
+    return /\.m3u8?(?:$|[?#])/i.test(lowerUrl) ||
+      mime.includes("mpegurl") ||
+      mime.includes("m3u8");
+  }
+
+  function safeProbeHeaders(headers?: Record<string, string>): HeadersInit | undefined {
+    if (!headers) return undefined;
+    const safe: Record<string, string> = {};
+    for (const [name, value] of Object.entries(headers)) {
+      const lower = name.toLowerCase();
+      if (lower === "authorization" || lower === "accept" || lower.startsWith("x-")) {
+        safe[name] = value;
+      }
+    }
+    return Object.keys(safe).length > 0 ? safe : undefined;
+  }
+
+  async function probeHlsManifest(
+    tabId: number,
+    url: string,
+    pageUrl: string | undefined,
+    headers?: Record<string, string>,
+  ): Promise<void> {
+    const key = `${tabId}:${normalizeUrlForDedup(url)}`;
+    if (hlsProbeInFlight.has(key)) return;
+    hlsProbeInFlight.add(key);
+
+    try {
+      const response = await fetch(url, {
+        credentials: "include",
+        headers: safeProbeHeaders(headers),
+        ...(pageUrl && /^https?:/i.test(pageUrl) ? { referrer: pageUrl } : {}),
+      });
+      if (!response.ok) return;
+
+      const declaredLength = Number(response.headers.get("content-length") || 0);
+      if (declaredLength > HLS_PROBE_MAX_BYTES) return;
+
+      const text = await response.text();
+      if (text.length > HLS_PROBE_MAX_BYTES) return;
+
+      const parsed = parseHlsManifest(text, response.url || url);
+      if (!parsed) return;
+
+      if (annotateHlsManifest(tabId, url, parsed.kind, parsed.variants)) {
+        bumpTabVersion(tabResourceVersions, tabId);
+        updateDisplayedBadgeForTab(tabId);
+        await notifyContentScript(tabId);
+      }
+    } catch (error) {
+      console.debug("[FluxDown] HLS manifest probe skipped:", url, error);
+    } finally {
+      hlsProbeInFlight.delete(key);
+    }
+  }
+
   // === 响应头监听：检测"导航转下载"场景 ===
   // 当浏览器主框架导航的响应带有 Content-Disposition: attachment 或
   // 下载类 Content-Type 时，说明这是一个"导航转下载"的请求。
@@ -1066,6 +1131,15 @@ export default defineBackground(() => {
           sniffCookies,
           sniffHeaders,
         );
+
+        if (isHlsManifestCandidate(details.url, contentType)) {
+          void probeHlsManifest(
+            details.tabId,
+            details.url,
+            details.documentUrl || details.originUrl || undefined,
+            sniffHeaders,
+          );
+        }
 
         if (added > 0) {
           // 更新 Badge

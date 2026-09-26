@@ -1061,7 +1061,7 @@ export default defineContentScript({
       // HLS / DASH 清单与完整文件才是“用户想下载的媒体”。TS/M4S 即使刚刚
       // 收到、甚至服务器带 filename，也只是播放器分片，永远不能盖过清单。
       if (isContentMediaCandidate(row.item)) {
-        if (row.item.source === 'hls' || row.item.source === 'dash') return 400;
+        if (row.item.source === 'hls' || row.item.source === 'dash') return 450;
         if (row.item.source === 'fragments' || ext === 'ts' || ext === 'm4s') return 0;
         if (row.item.source === 'direct') return 400;
       }

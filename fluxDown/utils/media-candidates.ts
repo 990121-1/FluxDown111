@@ -399,6 +399,13 @@ function directVariant(resource: DetectedResource, index: number): MediaCandidat
   };
 }
 
+function hlsMasterVariantLabel(resource: DetectedResource): string {
+  const labels = Array.from(new Set(
+    (resource.hlsVariants || []).map((variant) => variant.label).filter(Boolean),
+  ));
+  return labels.length > 0 ? labels.join(" / ") : "auto";
+}
+
 /**
  * 从一 tab 的原始资源和可选 DASH manifest 构建候选列表。
  *
@@ -421,6 +428,56 @@ export function buildMediaCandidates(
   const usedResourceIds = new Set<string>();
   const candidates: MediaCandidate[] = [];
   const seenManifestUrls = new Set<string>();
+
+  // HLS master playlists are the authoritative entry point. A player usually
+  // requests one child media playlist immediately after the master; showing
+  // that child as the primary item loses the other qualities. Consume all
+  // children represented by a detected master and expose one master candidate.
+  const hlsMasters = mediaResources.filter(
+    (resource) => resource.hlsKind === "master" && (resource.hlsVariants?.length ?? 0) > 0,
+  );
+  const hlsMasterKeys = new Set(hlsMasters.map((resource) => urlKey(resource.url)));
+
+  for (const master of hlsMasters) {
+    usedResourceIds.add(master.id);
+    const childKeys = new Set((master.hlsVariants || []).map((variant) => urlKey(variant.url)));
+    const children = mediaResources.filter(
+      (resource) => resource.id !== master.id && childKeys.has(urlKey(resource.url)),
+    );
+    for (const child of children) usedResourceIds.add(child.id);
+
+    const highest = master.hlsVariants?.[0];
+    candidates.push({
+      id: `hls-master:${urlKey(master.url)}`,
+      title: baseTitle,
+      type: "stream",
+      source: "hls",
+      pageUrl: options.pageUrl || master.pageUrl,
+      variants: [{
+        id: `hls-master:${master.id}`,
+        label: hlsMasterVariantLabel(master),
+        videoUrl: master.url,
+        mimeType: master.mimeType,
+        bandwidth: highest?.averageBandwidth ?? highest?.bandwidth,
+        resourceId: master.id,
+      }],
+      rawResourceIds: [master.id, ...children.map((child) => child.id)],
+      fragmentCount: 0,
+      downloadable: true,
+    });
+  }
+
+  // A known child media playlist is hidden only when its parent master is still
+  // present in this tab. If the master disappears or could not be fetched, the
+  // child remains a valid fallback download source.
+  for (const resource of mediaResources) {
+    if (
+      resource.hlsMasterUrl &&
+      hlsMasterKeys.has(urlKey(resource.hlsMasterUrl))
+    ) {
+      usedResourceIds.add(resource.id);
+    }
+  }
 
   // Map replacement deliberately keeps the newest manifest. CDN signatures and
   // track URLs are often short-lived; retaining the first copy would dedupe the

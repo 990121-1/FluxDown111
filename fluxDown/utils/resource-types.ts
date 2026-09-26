@@ -49,6 +49,19 @@ export interface QualityOption {
   estimatedSize: number; // bytes, -1 = 未知
 }
 
+/** Parsed HLS variant declared by a master playlist. */
+export interface HlsVariantInfo {
+  url: string;
+  label: string;
+  bandwidth?: number;
+  averageBandwidth?: number;
+  width?: number;
+  height?: number;
+  codecs?: string;
+}
+
+export type HlsManifestKind = "master" | "media";
+
 /** 检测到的可下载资源 */
 export interface DetectedResource {
   id: string;
@@ -72,6 +85,12 @@ export interface DetectedResource {
   cookies?: string;
   /** 资源请求的自定义头（Authorization 等，webRequest 嗅探时捕获） */
   headers?: Record<string, string>;
+  /** HLS manifest role learned from a lightweight manifest probe. */
+  hlsKind?: HlsManifestKind;
+  /** Master playlist variants. Present only when hlsKind === "master". */
+  hlsVariants?: HlsVariantInfo[];
+  /** Parent HLS master that contains this media playlist, when known. */
+  hlsMasterUrl?: string;
 }
 
 /** Content Script / Main World → Background 的资源消息格式 */
