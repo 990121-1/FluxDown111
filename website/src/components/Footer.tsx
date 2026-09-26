@@ -45,7 +45,7 @@ export default function Footer() {
 
             {/* Tech badges */}
             <div className="mt-5 flex flex-wrap gap-2">
-              {["Rust", "Flutter", "Tokio", "SQLite"].map((tech) => (
+              {["Rust", "GPUI", "Tokio", "SQLite"].map((tech) => (
                 <span
                   key={tech}
                   className="inline-flex items-center rounded-md border border-dark-border/60 bg-dark-surface1 px-2 py-0.5 text-[10px] font-medium text-dark-text-muted tracking-wide"

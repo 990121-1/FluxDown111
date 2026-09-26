@@ -732,7 +732,7 @@
   "faq.items.3.q": "Which browsers are supported?",
   "faq.items.3.a": "The browser extension supports Chrome, Edge, and other Chromium-based browsers. Firefox support is also available. The extension automatically intercepts downloads and sends them to FluxDown for accelerated downloading.",
   "faq.items.4.q": "How is FluxDown different from IDM?",
-  "faq.items.4.a": "FluxDown offers similar multi-threaded download acceleration but is completely free and built with modern technology (Rust + Flutter). It supports HTTP, HTTPS, FTP, BitTorrent, and HLS/DASH streaming, features smart segmentation based on your system specs, and provides a native desktop experience.",
+  "faq.items.4.a": "FluxDown offers similar multi-threaded download acceleration but is completely free and built with modern technology (Rust + GPUI). It supports HTTP, HTTPS, FTP, BitTorrent, and HLS/DASH streaming, features smart segmentation based on your system specs, and provides a native desktop experience.",
   "faq.items.5.q": "Does FluxDown support resume after interruption?",
   "faq.items.5.a": "Yes, FluxDown has full breakpoint resume support. All download progress is persisted to a local SQLite database. You can safely close the app or restart your computer without losing any progress.",
   "faq.items.6.q": "Which platforms are supported?",

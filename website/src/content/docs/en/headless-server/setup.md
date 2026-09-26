@@ -5,7 +5,7 @@ section: headless-server
 order: 1
 ---
 
-`fluxdown_server` is a headless build of the FluxDown download engine: no Flutter UI, no Rinf/FFI layer. It exposes the same Rust engine (HTTP/HTTPS, FTP, BitTorrent, HLS, DASH) over HTTP, WebSocket, and a Web UI baked into the executable, so you can run it on a NAS, a home server, or a VPS and manage downloads remotely from a browser. Releases ship a **single self-contained binary** — no companion `web/` folder to copy around.
+`fluxdown_server` is a headless host for the FluxDown download engine and does not run the GPUI desktop client. It exposes the same Rust engine (HTTP/HTTPS, FTP, BitTorrent, HLS, DASH) over HTTP, WebSocket, and a Web UI baked into the executable, so you can run it on a NAS, a home server, or a VPS and manage downloads remotely from a browser. Releases ship a **single self-contained binary** — no companion `web/` folder to copy around.
 
 For most deployments the prebuilt Docker image is the easiest path — see [Docker & NAS](/docs/en/headless-server/docker/). This page covers building and running from the workspace source with Cargo, plus configuration that applies to both.
 
