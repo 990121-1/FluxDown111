@@ -1,6 +1,6 @@
-//! 为 GPUI 桌面客户端嵌入 Windows 程序资源。
+//! 為 GPUI 桌面客戶端嵌入 Windows 程序資源。
 
-const WINDOWS_APP_ICON: &str = "../../windows/runner/resources/app_icon.ico";
+const WINDOWS_APP_ICON: &str = "../../assets/logo/app_icon.ico";
 
 fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-changed={WINDOWS_APP_ICON}");
@@ -11,10 +11,7 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-/// 资源 ID 1 是 Windows Explorer 与 GPUI Windows 后端共同读取的默认图标。
-///
-/// 后续运行时图标切换应覆盖窗口、任务栏和快捷方式引用；这里的默认资源始终
-/// 保留，供未选择动态图标、重置图标及进程未运行时回退使用。
+/// 資源 ID 1 是 Windows Explorer 與 GPUI Windows 後端共同讀取的預設圖示。
 #[cfg(windows)]
 fn embed_windows_resources() -> std::io::Result<()> {
     let mut resources = winresource::WindowsResource::new();
