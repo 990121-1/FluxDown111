@@ -61,7 +61,7 @@ function Install-WingetPackage {
 function Test-Msvc {
     if (Get-Executable @("cl.exe", "cl")) { return $true }
     $vswhereCandidates = @(
-        "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
         "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
     )
     foreach ($vswhere in $vswhereCandidates) {
@@ -136,12 +136,12 @@ function Find-BrowserExe {
     if ($Name -eq "Chrome") {
         $candidates = @(
             "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-            "$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe",
+            "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
             "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
         )
     } else {
         $candidates = @(
-            "$env:ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe",
+            "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
             "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
             "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe"
         )
