@@ -1,6 +1,8 @@
 ---
 title: Installation
 description: Install the current FluxDown GPUI desktop build on Windows.
+section: getting-started
+order: 1
 ---
 
 # Installation

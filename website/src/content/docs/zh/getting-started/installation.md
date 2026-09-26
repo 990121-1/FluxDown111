@@ -1,6 +1,8 @@
 ---
 title: 安装
 description: 在 Windows 上安装当前的 FluxDown GPUI 桌面版。
+section: getting-started
+order: 1
 ---
 
 # 安装
