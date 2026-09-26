@@ -207,7 +207,6 @@ forward_consumer!(
     fluxdown_ui_downloads::TaskDetailView,
     fluxdown_ui_downloads::GroupDetailView,
     fluxdown_ui_settings::SettingsStore,
-    fluxdown_ui_account::AccountView,
     fluxdown_ui_rss::RssView,
     fluxdown_ui_extensions::ExtensionsView,
 );

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "cleanup/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Rust format
+        run: cargo fmt --check
+
+      - name: Rust check
+        run: cargo check -p fluxdown_ui_app -p fluxdown_agent -p fluxdown_daemon -p fluxdown_nmh --bins
+
+      - name: Build extension
+        shell: pwsh
+        run: |
+          cd fluxDown
+          npm install
+          npm run build
