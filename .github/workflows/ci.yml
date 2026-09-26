@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Validate one-click installer script
+        shell: pwsh
+        run: |
+          $null = [ScriptBlock]::Create((Get-Content .\install-windows.ps1 -Raw))
+
       - name: Rust format
         run: cargo fmt --check
 
@@ -31,5 +36,5 @@ jobs:
         shell: pwsh
         run: |
           cd fluxDown
-          npm install
+          npm install --package-lock=false
           npm run build
