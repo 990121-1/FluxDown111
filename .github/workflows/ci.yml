@@ -30,7 +30,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Rust check
-        run: cargo check -p fluxdown_ui_app -p fluxdown_agent -p fluxdown_daemon -p fluxdown_nmh --bins
+        run: cargo check --locked -p fluxdown_ui_app -p fluxdown_agent -p fluxdown_daemon -p fluxdown_nmh --bins
 
       - name: Build extension
         shell: pwsh

@@ -78,7 +78,7 @@ checksum = "b016ca8db0ea0ea2ceff29a9d6240391492d960716aa471967c00e8cc8cb197c"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
- "async-channel 2.5.0",
+ "async-channel",
  "async-executor",
  "async-task",
  "atspi",
@@ -178,15 +178,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc890384c8602f339876ded803c97ad529f3842aba97f6392b3dba0dd171769b"
 dependencies = [
  "equator",
-]
-
-[[package]]
-name = "allo-isolate"
-version = "0.1.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "449e356a4864c017286dbbec0e12767ea07efba29e3b7d984194c2a7ff3c4550"
-dependencies = [
- "atomic",
 ]
 
 [[package]]
@@ -399,21 +390,10 @@ version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "435a87a52755b8f27fcf321ac4f04b2802e337c8c4872923137471ec39c37532"
 dependencies = [
- "event-listener 5.4.1",
+ "event-listener",
  "event-listener-strategy",
  "futures-core",
  "pin-project-lite",
-]
-
-[[package]]
-name = "async-channel"
-version = "1.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81953c529336010edd6d8e358f886d9581267795c61b19475b71314bffa46d35"
-dependencies = [
- "concurrent-queue",
- "event-listener 2.5.3",
- "futures-core",
 ]
 
 [[package]]
@@ -490,7 +470,7 @@ version = "3.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311"
 dependencies = [
- "event-listener 5.4.1",
+ "event-listener",
  "event-listener-strategy",
  "pin-project-lite",
 ]
@@ -507,28 +487,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-oneshot"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae47de2a02d543205f3f5457a90b6ecbc9494db70557bd29590ec8f1ddff5463"
-dependencies = [
- "futures-micro",
-]
-
-[[package]]
 name = "async-process"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc50921ec0055cdd8a16de48773bfeec5c972598674347252c0399676be7da75"
 dependencies = [
- "async-channel 2.5.0",
+ "async-channel",
  "async-io",
  "async-lock",
  "async-signal",
  "async-task",
  "blocking",
  "cfg-if",
- "event-listener 5.4.1",
+ "event-listener",
  "futures-lite",
  "rustix 1.1.3",
 ]
@@ -1063,7 +1034,7 @@ version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a70e4329df6cb94385eed412ec92375c3cdd8a6e502493d1229b6414e4036dfa"
 dependencies = [
- "async-channel 2.5.0",
+ "async-channel",
  "async-task",
  "futures-io",
  "futures-lite",
@@ -2654,12 +2625,6 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "2.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
-
-[[package]]
-name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
@@ -2675,7 +2640,7 @@ version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
- "event-listener 5.4.1",
+ "event-listener",
  "pin-project-lite",
 ]
 
@@ -2904,22 +2869,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fluxdown_cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "directories",
- "fluxdown_api",
- "fluxdown_engine",
- "fluxdown_protocol",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
- "toml 1.1.2+spec-1.1.0",
-]
-
-[[package]]
 name = "fluxdown_daemon"
 version = "0.1.0"
 dependencies = [
@@ -3027,49 +2976,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fluxdown_server"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64 0.22.1",
- "fluxdown_api",
- "fluxdown_engine",
- "fluxdown_engine_protocol",
- "fluxdown_protocol",
- "fs2",
- "futures-util",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tower-http 0.7.0",
- "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "fluxdown_ui_account"
-version = "0.1.0"
-dependencies = [
- "fluxdown_protocol",
- "fluxdown_ui_components",
- "fluxdown_ui_i18n",
- "fluxdown_ui_theme",
- "gpui",
- "gpui-component",
- "serde_json",
-]
-
-[[package]]
 name = "fluxdown_ui_app"
 version = "0.1.0"
 dependencies = [
  "directories",
  "fluxdown_protocol",
- "fluxdown_ui_account",
  "fluxdown_ui_downloads",
  "fluxdown_ui_extensions",
  "fluxdown_ui_i18n",
@@ -3457,15 +3368,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.4",
-]
-
-[[package]]
-name = "futures-micro"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b460264b3593d68b16a7bc35f7bc226ddfebdf9a1c8db1ed95d5cc6b7168c826"
-dependencies = [
- "pin-project-lite",
 ]
 
 [[package]]
@@ -3885,7 +3787,7 @@ source = "git+https://github.com/zed-industries/zed#e0931d5a9dbf4f781b336fdf4487
 dependencies = [
  "accesskit",
  "anyhow",
- "async-channel 2.5.0",
+ "async-channel",
  "async-task",
  "bindgen",
  "bitflags 2.13.1",
@@ -3970,7 +3872,7 @@ source = "git+https://github.com/longbridge/gpui-component?rev=334bbed2e8c47d606
 dependencies = [
  "aho-corasick",
  "anyhow",
- "async-channel 2.5.0",
+ "async-channel",
  "chrono",
  "gpui",
  "gpui_macros",
@@ -4630,12 +4532,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-range-header"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c"
-
-[[package]]
 name = "http_client"
 version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed#e0931d5a9dbf4f781b336fdf448739e74a2ac0b5"
@@ -4666,49 +4562,6 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
-
-[[package]]
-name = "hub"
-version = "0.1.0"
-dependencies = [
- "aes",
- "async-compression",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "cbc",
- "chrono",
- "dash-mpd",
- "encoding_rs",
- "fluxdown_api",
- "fluxdown_engine",
- "fluxdown_engine_protocol",
- "fluxdown_protocol",
- "futures-util",
- "hex 0.4.3",
- "http",
- "libc",
- "m3u8-rs",
- "md-5 0.10.6",
- "messages",
- "reqwest 0.12.28",
- "rinf",
- "serde",
- "serde_json",
- "sha1 0.10.6",
- "sha2 0.10.9",
- "suppaftp",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "ts2mp4",
- "url",
- "uuid",
- "windows-sys 0.59.0",
- "winreg",
- "zip",
-]
 
 [[package]]
 name = "hxdmp"
@@ -6232,20 +6085,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "messages"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e02e0c66a1c30e448db540072c1b3811859ebeac2671f96bba20ed7932210205"
-dependencies = [
- "async-channel 1.9.0",
- "async-oneshot",
- "async-trait",
- "futures",
- "once_cell",
- "tokio",
-]
-
-[[package]]
 name = "metal"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7180,16 +7019,6 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
-]
-
-[[package]]
-name = "os-thread-local"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd7fc7fa9ea7dc8907f9b10e730106ed0011926e7f5abb382530ac91d1af2b7c"
-dependencies = [
- "libc",
- "winapi",
 ]
 
 [[package]]
@@ -8249,7 +8078,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
- "tower-http 0.6.8",
+ "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -8290,7 +8119,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
- "tower-http 0.6.8",
+ "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -8340,34 +8169,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 dependencies = [
  "bytemuck",
-]
-
-[[package]]
-name = "rinf"
-version = "8.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "165405a4c9092f80f36c7b7f2164b4e03b459ee0df9c935fed9a511cb96fd775"
-dependencies = [
- "allo-isolate",
- "bincode",
- "js-sys",
- "os-thread-local",
- "rinf_proc",
- "serde",
- "wasm-bindgen",
- "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "rinf_proc"
-version = "8.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a76b28e2cf7c67d567503c7f5731281aeeb5a9920848ae4d763cdcb27db1f5d"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2",
- "quote",
- "syn 2.0.118",
 ]
 
 [[package]]
@@ -9273,7 +9074,7 @@ version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a33bd3e260892199c3ccfc487c88b2da2265080acb316cd920da72fdfd7c599f"
 dependencies = [
- "async-channel 2.5.0",
+ "async-channel",
  "async-executor",
  "async-fs",
  "async-io",
@@ -9376,7 +9177,7 @@ dependencies = [
  "crc",
  "crossbeam-queue",
  "either",
- "event-listener 5.4.1",
+ "event-listener",
  "futures-core",
  "futures-intrusive",
  "futures-io",
@@ -10415,31 +10216,6 @@ dependencies = [
  "iri-string",
  "pin-project-lite",
  "tower",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b11f75e912b0c2be01b63d8cf8057b8c3f97cf34abb3d431a3a4c8675498e233"
-dependencies = [
- "bitflags 2.13.1",
- "bytes",
- "futures-core",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "http-range-header",
- "httpdate",
- "mime",
- "mime_guess",
- "percent-encoding",
- "pin-project-lite",
- "tokio",
- "tokio-util",
  "tower-layer",
  "tower-service",
 ]
@@ -12311,7 +12087,7 @@ dependencies = [
  "async-trait",
  "blocking",
  "enumflags2",
- "event-listener 5.4.1",
+ "event-listener",
  "futures-core",
  "futures-lite",
  "hex 0.4.3",
