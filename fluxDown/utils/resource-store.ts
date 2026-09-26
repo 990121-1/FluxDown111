@@ -10,6 +10,8 @@ import type {
   DetectedResource,
   ResourceMessagePayload,
   ConfidenceLevel,
+  HlsManifestKind,
+  HlsVariantInfo,
 } from "./resource-types";
 import {
   generateResourceId,
@@ -173,6 +175,52 @@ export function getResourcesForTab(tabId: number): DetectedResource[] {
     // 同可信度按时间降序
     return b.detectedAt - a.detectedAt;
   });
+}
+
+/**
+ * Attach HLS master/media metadata to an already sniffed resource and link any
+ * child media playlists back to their parent master. This mutates the tab store
+ * in place so existing UI notification paths can reuse the same resource list.
+ */
+export function annotateHlsManifest(
+  tabId: number,
+  url: string,
+  kind: HlsManifestKind,
+  variants: HlsVariantInfo[] = [],
+): boolean {
+  const resourceMap = tabResources.get(tabId);
+  if (!resourceMap) return false;
+
+  const resource = resourceMap.get(generateResourceId(url));
+  if (!resource) return false;
+
+  resource.hlsKind = kind;
+
+  if (kind === "master") {
+    resource.hlsVariants = variants.map((variant) => ({ ...variant }));
+    delete resource.hlsMasterUrl;
+
+    const childIds = new Set(variants.map((variant) => generateResourceId(variant.url)));
+    for (const child of resourceMap.values()) {
+      if (child.id === resource.id || !childIds.has(child.id)) continue;
+      child.hlsKind = child.hlsKind || "media";
+      child.hlsMasterUrl = resource.url;
+    }
+  } else {
+    delete resource.hlsVariants;
+    for (const possibleMaster of resourceMap.values()) {
+      if (possibleMaster.hlsKind !== "master" || !possibleMaster.hlsVariants?.length) continue;
+      const containsChild = possibleMaster.hlsVariants.some(
+        (variant) => generateResourceId(variant.url) === resource.id,
+      );
+      if (containsChild) {
+        resource.hlsMasterUrl = possibleMaster.url;
+        break;
+      }
+    }
+  }
+
+  return true;
 }
 
 export function getResourceCountForTab(tabId: number): number {

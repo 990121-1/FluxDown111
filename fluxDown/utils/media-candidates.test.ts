@@ -69,6 +69,53 @@ function manifest(
 }
 
 describe("buildMediaCandidates", () => {
+  test("prefers an HLS master and consumes its detected child playlist", () => {
+    const master = resource({
+      id: "hls-master",
+      url: "https://cdn.example.com/video/playlist.m3u8",
+      type: "stream",
+      mimeType: "application/vnd.apple.mpegurl",
+      hlsKind: "master",
+      hlsVariants: [
+        {
+          url: "https://cdn.example.com/video/720p/video.m3u8",
+          label: "720p",
+          height: 720,
+          bandwidth: 3_400_000,
+        },
+        {
+          url: "https://cdn.example.com/video/480p/video.m3u8",
+          label: "480p",
+          height: 480,
+          bandwidth: 1_900_000,
+        },
+      ],
+    });
+    const child = resource({
+      id: "hls-child",
+      url: "https://cdn.example.com/video/720p/video.m3u8",
+      type: "stream",
+      mimeType: "application/vnd.apple.mpegurl",
+      hlsKind: "media",
+      hlsMasterUrl: master.url,
+    });
+
+    const candidates = buildMediaCandidates([child, master], {
+      pageTitle: "Example",
+      fallbackTitle: "Video",
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      source: "hls",
+      variants: [{
+        label: "720p / 480p",
+        videoUrl: master.url,
+      }],
+    });
+    expect(candidates[0].rawResourceIds).toEqual(expect.arrayContaining(["hls-master", "hls-child"]));
+  });
+
   test("同一分辨率按普通帧率/高帧率各保留一档，并选择码率最高的轨道", () => {
     const tracks: DashManifest["video"] = [
       {
