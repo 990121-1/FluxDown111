@@ -19,8 +19,8 @@ echo.
 if not "%EXITCODE%"=="0" (
     echo [ERROR] FluxDown installation failed. Exit code: %EXITCODE%
     echo.
-    echo Do not paste install-windows.ps1 into a PowerShell window.
-    echo Run this INSTALL.cmd file directly from the cloned repository.
+    echo Read the error shown above, fix that specific issue, then run INSTALL.cmd again.
+    echo If this window reports a file is in use, the latest installer will retry automatically.
     echo.
     pause
     exit /b %EXITCODE%
