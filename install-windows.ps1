@@ -110,12 +110,88 @@ function Ensure-Prerequisites {
     Write-Ok "MSVC C++ Build Tools detected"
 }
 
+function Get-FluxDownProcesses {
+    return @(Get-Process -Name "fluxdown-desktop", "fluxdown-agent", "fluxdownd", "fluxdown_nmh" -ErrorAction SilentlyContinue)
+}
+
 function Stop-FluxDownProcesses {
-    Write-Step "Stopping running FluxDown processes"
-    foreach ($name in @("fluxdown-desktop", "fluxdown-agent", "fluxdownd", "fluxdown_nmh")) {
-        Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    param([switch]$Quiet)
+
+    if (-not $Quiet) { Write-Step "Stopping running FluxDown processes" }
+
+    # Browser Native Messaging can restart nmh -> agent -> daemon while the
+    # installer is running. Kill process trees repeatedly instead of issuing a
+    # single Stop-Process and assuming Windows has released every executable.
+    $deadline = (Get-Date).AddSeconds(12)
+    do {
+        foreach ($process in @(Get-FluxDownProcesses)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 350
+        $remaining = @(Get-FluxDownProcesses)
+        if ($remaining.Count -eq 0) { return }
+    } while ((Get-Date) -lt $deadline)
+
+    $names = (@(Get-FluxDownProcesses) | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" }) -join ", "
+    throw "Could not stop running FluxDown processes: $names"
+}
+
+function Suspend-FluxDownNativeMessaging {
+    Write-Step "Temporarily disconnecting browser Native Messaging"
+
+    $paths = @(
+        "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.fluxdown.nmh",
+        "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.fluxdown.nmh",
+        "HKCU:\Software\Mozilla\NativeMessagingHosts\com.fluxdown.nmh"
+    )
+    $backup = @{}
+
+    foreach ($path in $paths) {
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            $key = Get-Item -LiteralPath $path
+            $backup[$path] = $key.GetValue("")
+            Remove-Item -LiteralPath $path -Recurse -Force
+        } catch {
+            Write-Warn "Could not temporarily remove Native Messaging registration: $path"
+        }
     }
-    Start-Sleep -Milliseconds 700
+
+    return $backup
+}
+
+function Restore-FluxDownNativeMessaging {
+    param([hashtable]$Backup)
+
+    if (-not $Backup) { return }
+    foreach ($path in $Backup.Keys) {
+        try {
+            New-Item -Path $path -Force | Out-Null
+            Set-Item -Path $path -Value $Backup[$path]
+        } catch {
+            Write-Warn "Could not restore Native Messaging registration: $path"
+        }
+    }
+}
+
+function Copy-FileWithRetry {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination,
+        [int]$Attempts = 12
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        } catch [System.IO.IOException] {
+            if ($attempt -ge $Attempts) { throw }
+            Write-Warn "File is still busy; retrying ($attempt/$Attempts): $Destination"
+            Stop-FluxDownProcesses -Quiet
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 
 function New-Shortcut {
@@ -234,8 +310,22 @@ if (-not (Test-Path -LiteralPath (Join-Path $ExtensionBuildDir "manifest.json"))
 
 Write-Step "Installing FluxDown into $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-foreach ($exeName in $RequiredExe) {
-    Copy-Item -LiteralPath (Join-Path $ReleaseDir $exeName) -Destination (Join-Path $InstallDir $exeName) -Force
+
+# The browser extension may reconnect to the Native Messaging Host during the
+# several-minute Rust build and silently relaunch the old installed Agent. Block
+# that relaunch source immediately before replacing the binaries, then restore
+# the registry entries after the copy is complete. A newly started FluxDown
+# Agent will refresh the manifests/registration again.
+$nmhRegistrationBackup = Suspend-FluxDownNativeMessaging
+try {
+    Stop-FluxDownProcesses
+    foreach ($exeName in $RequiredExe) {
+        Copy-FileWithRetry `
+            -Source (Join-Path $ReleaseDir $exeName) `
+            -Destination (Join-Path $InstallDir $exeName)
+    }
+} finally {
+    Restore-FluxDownNativeMessaging -Backup $nmhRegistrationBackup
 }
 
 $InstalledExtensionDir = Join-Path $InstallDir "extension"
